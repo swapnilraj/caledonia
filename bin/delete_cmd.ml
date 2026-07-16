@@ -5,16 +5,18 @@ let run ~component_id ~fs calendar_dir =
   let ( let* ) = Result.bind in
   let* components = Calendar_dir.get_components ~fs calendar_dir in
   let* component =
-    match List.filter (fun c -> Component.get_id c = component_id) components with
-    | [ comp ] -> Ok comp
-    | [] -> Error (`Msg ("No component found for id " ^ component_id))
-    | _ -> Error (`Msg ("More than one component found for id " ^ component_id))
+    Command_common.find_unique_component ~id:component_id components
   in
-  let result = Calendar_dir.delete_component ~fs calendar_dir components component in
+  let result =
+    Calendar_dir.remove_stored_component ~fs calendar_dir component
+    |> Command_common.storage_result
+  in
   match result with
   | Error (`Msg msg) -> Error (`Msg msg)
+  | Error (`Conflict msg) -> Error (`Conflict msg)
   | Ok _ ->
-      Printf.printf "Component %s successfully deleted.\n" component_id;
+      Output.print_terminal_stdout_line
+        (Printf.sprintf "Component %s successfully deleted." component_id);
       Ok ()
 
 let component_id_arg =
@@ -25,7 +27,10 @@ let cmd ~fs calendar_dir =
   let run component_id () =
     match run ~component_id ~fs calendar_dir with
     | Error (`Msg msg) ->
-        Printf.eprintf "Error: %s\n%!" msg;
+        Output.print_error "Error" msg;
+        1
+    | Error (`Conflict msg) ->
+        Output.print_error "Conflict" msg;
         1
     | Ok () -> 0
   in
@@ -34,7 +39,9 @@ let cmd ~fs calendar_dir =
   let man =
     [
       `S Manpage.s_description;
-      `P "Delete a component (event, todo, or journal) from your calendar by its ID.";
+      `P
+        "Delete a component (event, todo, or journal) from your calendar by \
+         its ID.";
       `P "You can find component IDs by using the `list` or `search` commands.";
       `S Manpage.s_examples;
       `P "Delete a component:";

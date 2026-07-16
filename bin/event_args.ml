@@ -28,7 +28,10 @@ let start_time_arg =
   Arg.(value & opt (some string) None & info [ "time"; "t" ] ~docv:"TIME" ~doc)
 
 let end_date_arg =
-  let doc = "Event end date (YYYY-MM-DD). Defaults to DATE." in
+  let doc =
+    "Inclusive event end date (YYYY-MM-DD). An all-day event defaults to one \
+     day; an end time without an end date uses DATE."
+  in
   Arg.(
     value
     & opt (some string) None
@@ -45,7 +48,8 @@ let timezone_arg =
   let doc =
     "Timezone to add events to (e.g., 'America/New_York', 'UTC', \
      'Europe/London'). If not specified, will use the local timezone. For a \
-     floating time (always at whatever the sytem time is), use 'FLOATING'."
+     floating time (interpreted in the selected system/query timezone), use \
+     'FLOATING'."
   in
   Arg.(
     value
@@ -79,7 +83,10 @@ let recur_arg =
     value & opt (some string) None & info [ "recur"; "r" ] ~docv:"RECUR" ~doc)
 
 let alarm_arg =
-  let doc = "Add an alarm trigger before the event start (e.g., '15m', '1h', '1d', '2h30m'). Can be specified multiple times." in
+  let doc =
+    "Add an alarm trigger before the event start (e.g., '15m', '1h', '1d', \
+     '2h30m'). Can be specified multiple times."
+  in
   Arg.(value & opt_all string [] & info [ "alarm"; "a" ] ~docv:"ALARM" ~doc)
 
 let date_format_manpage_entries =
@@ -106,24 +113,129 @@ let date_format_manpage_entries =
     `I ("+Nm", "N months from today (e.g., +2m for 2 months from today)");
   ]
 
-let parse_start ~start_date ~start_time ~timezone =
+let conversion_error error = `Msg (Date.string_of_conversion_error error)
+
+let wall_clock_of_instant ~tz instant =
   let ( let* ) = Result.bind in
-  let* _ =
-    match timezone with
-    | None -> Ok ()
-    | Some tzid -> (
-        match Timedesc.Time_zone.make tzid with
-        | Some _ -> Ok ()
-        | None ->
-            Error (`Msg (Printf.sprintf "Warning: Unknown timezone %s" tzid)))
+  let* local =
+    Date.ptime_to_timedesc_result ~tz instant
+    |> Result.map_error conversion_error
   in
+  let date = (Timedesc.year local, Timedesc.month local, Timedesc.day local) in
+  let time =
+    (Timedesc.hour local, Timedesc.minute local, Timedesc.second local)
+  in
+  match Ptime.of_date_time (date, (time, 0)) with
+  | Some wall_clock -> Ok wall_clock
+  | None -> Error (`Msg "Calendar wall-clock value is out of range")
+
+let parse_calendar_date ~tz ~now expression parameter =
+  let ( let* ) = Result.bind in
+  let* instant = Date.parse_date ~tz ~now expression parameter in
+  let* local =
+    Date.ptime_to_timedesc_result ~tz instant
+    |> Result.map_error conversion_error
+  in
+  Ok (Timedesc.year local, Timedesc.month local, Timedesc.day local)
+
+let exact_calendar_date value =
+  match String.split_on_char '-' value with
+  | [ year; month; day ] -> (
+      match
+        (int_of_string_opt year, int_of_string_opt month, int_of_string_opt day)
+      with
+      | Some year, Some month, Some day ->
+          let date = (year, month, day) in
+          Option.map (fun _ -> date) (Ptime.of_date date)
+      | _ -> None)
+  | _ -> None
+
+let exact_clock_time value =
+  match String.split_on_char ':' value with
+  | [ hour; minute ] -> (
+      match (int_of_string_opt hour, int_of_string_opt minute) with
+      | Some hour, Some minute -> Some (hour, minute, 0)
+      | _ -> None)
+  | [ hour; minute; second ] -> (
+      match
+        ( int_of_string_opt hour,
+          int_of_string_opt minute,
+          int_of_string_opt second )
+      with
+      | Some hour, Some minute, Some second -> Some (hour, minute, second)
+      | _ -> None)
+  | _ -> None
+
+let parse_calendar_datetime ~tz ~now ~date ~time parameter =
+  let ( let* ) = Result.bind in
+  let* date =
+    match exact_calendar_date date with
+    | Some date -> Ok date
+    | None -> parse_calendar_date ~tz ~now date parameter
+  in
+  let* time =
+    match exact_clock_time time with
+    | Some time -> Ok time
+    | None -> Error (`Msg "Time must use HH:MM or HH:MM:SS format")
+  in
+  let* wall_clock =
+    match Ptime.of_date_time (date, (time, 0)) with
+    | Some value -> Ok value
+    | None -> Error (`Msg "Calendar wall-clock value is out of range")
+  in
+  let* _instant =
+    Date.ptime_of_ical_result ~floating_tz:tz (`Datetime (`Local wall_clock))
+    |> Result.map_error conversion_error
+  in
+  Ok wall_clock
+
+let parse_calendar_wall_datetime ~now ~date ~time parameter =
+  let ( let* ) = Result.bind in
+  let* date =
+    match exact_calendar_date date with
+    | Some date -> Ok date
+    | None ->
+        parse_calendar_date ~tz:(Date.local_timezone ()) ~now date parameter
+  in
+  let* time =
+    match exact_clock_time time with
+    | Some time -> Ok time
+    | None -> Error (`Msg "Time must use HH:MM or HH:MM:SS format")
+  in
+  match Ptime.of_date_time (date, (time, 0)) with
+  | Some value -> Ok value
+  | None -> Error (`Msg "Calendar wall-clock value is out of range")
+
+let parse_calendar_date_expression ~now expression parameter =
+  match exact_calendar_date expression with
+  | Some date -> Ok date
+  | None ->
+      parse_calendar_date ~tz:(Date.local_timezone ()) ~now expression parameter
+
+let add_calendar_days (year, month, day) days =
+  match Timedesc.Date.Ymd.make ~year ~month ~day with
+  | Error _ -> Error (`Msg "Calendar date is out of range")
+  | Ok date ->
+      let date = Timedesc.Date.add ~days date in
+      Ok
+        ( Timedesc.Date.year date,
+          Timedesc.Date.month date,
+          Timedesc.Date.day date )
+
+let timezone_of_name tzid =
+  match Timedesc.Time_zone.make tzid with
+  | Some timezone -> Ok timezone
+  | None -> Error (`Msg (Printf.sprintf "Unknown timezone %S" tzid))
+
+let parse_start ~now ~start_date ~start_time ~timezone =
+  let ( let* ) = Result.bind in
   match start_date with
   | None ->
       let* _ =
         match start_time with
         | None -> Ok ()
         | Some _ ->
-            Error (`Msg "Can't specify an start time without a start date")
+            Error (`Msg "Can't specify a start time without a start date")
       in
       let* _ =
         match timezone with
@@ -139,21 +251,15 @@ let parse_start ~start_date ~start_time ~timezone =
             | None -> Ok ()
             | _ -> Error (`Msg "Can't specify a timezone without a start time")
           in
-          let* ptime =
-            Date.parse_date ~tz:Timedesc.Time_zone.utc start_date `From
-          in
-          let date = Ptime.to_date ptime in
+          let* date = parse_calendar_date_expression ~now start_date `From in
           Ok (Some (Icalendar.Params.singleton Valuetype `Date, `Date date))
       | Some start_time -> (
           match timezone with
           | None ->
-              let* tzid =
-                match Timedesc.Time_zone.local () with
-                | Some tz -> Ok (Timedesc.Time_zone.name tz)
-                | None -> Error (`Msg "Failed to get system timezone")
-              in
+              let timezone = Date.local_timezone () in
+              let tzid = Timedesc.Time_zone.name timezone in
               let* datetime =
-                Date.parse_date_time ~tz:Timedesc.Time_zone.utc ~date:start_date
+                parse_calendar_datetime ~tz:timezone ~now ~date:start_date
                   ~time:start_time `From
               in
               Ok
@@ -162,19 +268,20 @@ let parse_start ~start_date ~start_time ~timezone =
                      `Datetime (`With_tzid (datetime, (false, tzid))) ))
           | Some "FLOATING" ->
               let* datetime =
-                Date.parse_date_time ~tz:Timedesc.Time_zone.utc ~date:start_date
+                parse_calendar_wall_datetime ~now ~date:start_date
                   ~time:start_time `From
               in
               Ok (Some (Icalendar.Params.empty, `Datetime (`Local datetime)))
           | Some "UTC" ->
               let* datetime =
-                Date.parse_date_time ~tz:Timedesc.Time_zone.utc ~date:start_date
-                  ~time:start_time `From
+                parse_calendar_datetime ~tz:Timedesc.Time_zone.utc ~now
+                  ~date:start_date ~time:start_time `From
               in
               Ok (Some (Icalendar.Params.empty, `Datetime (`Utc datetime)))
           | Some tzid ->
+              let* timezone = timezone_of_name tzid in
               let* datetime =
-                Date.parse_date_time ~tz:Timedesc.Time_zone.utc ~date:start_date
+                parse_calendar_datetime ~tz:timezone ~now ~date:start_date
                   ~time:start_time `From
               in
               Ok
@@ -182,17 +289,8 @@ let parse_start ~start_date ~start_time ~timezone =
                    ( Icalendar.Params.empty,
                      `Datetime (`With_tzid (datetime, (false, tzid))) ))))
 
-let parse_end ~end_date ~end_time ~end_timezone =
+let parse_end ~now ~end_date ~end_time ~end_timezone =
   let ( let* ) = Result.bind in
-  let* _ =
-    match end_timezone with
-    | None -> Ok ()
-    | Some tzid -> (
-        match Timedesc.Time_zone.make tzid with
-        | Some _ -> Ok ()
-        | None ->
-            Error (`Msg (Printf.sprintf "Warning: Unknown timezone %s" tzid)))
-  in
   match end_date with
   | None ->
       let* _ =
@@ -213,28 +311,23 @@ let parse_end ~end_date ~end_time ~end_timezone =
           let* _ =
             match end_timezone with
             | Some _ ->
-                Error (`Msg "Can't specify an end timezone without a end time")
+                Error (`Msg "Can't specify an end timezone without an end time")
             | _ -> Ok ()
           in
-          let* ptime =
-            Date.parse_date end_date ~tz:Timedesc.Time_zone.utc `From
-          in
-          (* DTEND;VALUE=DATE the event ends at the start of the specified date *)
-          let ptime = Date.add_days ptime 1 in
-          let date = Ptime.to_date ptime in
+          let* date = parse_calendar_date_expression ~now end_date `From in
+          (* The CLI end date is inclusive; RFC DTEND;VALUE=DATE is exclusive,
+             so persist midnight at the start of the following day. *)
+          let* date = add_calendar_days date 1 in
           Ok
             (Some
                (`Dtend (Icalendar.Params.singleton Valuetype `Date, `Date date)))
       | Some end_time -> (
           match end_timezone with
           | None ->
-              let* tzid =
-                match Timedesc.Time_zone.local () with
-                | Some tz -> Ok (Timedesc.Time_zone.name tz)
-                | None -> Error (`Msg "Failed to get system timezone")
-              in
+              let timezone = Date.local_timezone () in
+              let tzid = Timedesc.Time_zone.name timezone in
               let* datetime =
-                Date.parse_date_time ~tz:Timedesc.Time_zone.utc ~date:end_date
+                parse_calendar_datetime ~tz:timezone ~now ~date:end_date
                   ~time:end_time `From
               in
               Ok
@@ -244,23 +337,24 @@ let parse_end ~end_date ~end_time ~end_timezone =
                         `Datetime (`With_tzid (datetime, (false, tzid))) )))
           | Some "FLOATING" ->
               let* datetime =
-                Date.parse_date_time ~tz:Timedesc.Time_zone.utc ~date:end_date
-                  ~time:end_time `From
+                parse_calendar_wall_datetime ~now ~date:end_date ~time:end_time
+                  `From
               in
               Ok
                 (Some
                    (`Dtend (Icalendar.Params.empty, `Datetime (`Local datetime))))
           | Some "UTC" ->
               let* datetime =
-                Date.parse_date_time ~tz:Timedesc.Time_zone.utc ~date:end_date
-                  ~time:end_time `From
+                parse_calendar_datetime ~tz:Timedesc.Time_zone.utc ~now
+                  ~date:end_date ~time:end_time `From
               in
               Ok
                 (Some
                    (`Dtend (Icalendar.Params.empty, `Datetime (`Utc datetime))))
           | Some tzid ->
+              let* timezone = timezone_of_name tzid in
               let* datetime =
-                Date.parse_date_time ~tz:Timedesc.Time_zone.utc ~date:end_date
+                parse_calendar_datetime ~tz:timezone ~now ~date:end_date
                   ~time:end_time `From
               in
               Ok
@@ -277,151 +371,44 @@ let combine_results (results : ('a, 'b) result list) : ('a list, 'b) result =
   in
   aux [] results
 
-let parse_recurrence recur =
-  let ( let* ) = Result.bind in
-  let parts = String.split_on_char ';' recur in
-  let freq = ref None in
-  let count = ref None in
-  let until = ref None in
-  let interval = ref None in
-  let by_parts = ref [] in
-  let results =
-    List.map
-      (fun part ->
-        let kv = String.split_on_char '=' part in
-        match kv with
-        | [ "FREQ"; value ] -> (
-            match String.uppercase_ascii value with
-            | "DAILY" ->
-                freq := Some `Daily;
-                Ok ()
-            | "WEEKLY" ->
-                freq := Some `Weekly;
-                Ok ()
-            | "MONTHLY" ->
-                freq := Some `Monthly;
-                Ok ()
-            | "YEARLY" ->
-                freq := Some `Yearly;
-                Ok ()
-            | _ -> Error (`Msg ("Unsupported frequency: " ^ value)))
-        | [ "COUNT"; value ] ->
-            if !until <> None then
-              Error (`Msg "Cannot use both COUNT and UNTIL in the same rule")
-            else (
-              count := Some (`Count (int_of_string value));
-              Ok ())
-        | [ "UNTIL"; value ] -> (
-            if !count <> None then
-              Error (`Msg "Cannot use both COUNT and UNTIL in the same rule")
-            else
-              let* v =
-                match Icalendar.parse_datetime value with
-                | Ok v -> Ok v
-                | Error e -> Error (`Msg e)
-              in
-              match v with
-              | `With_tzid _ -> Error (`Msg "Until can't be in a timezone")
-              | `Utc u ->
-                  until := Some (`Until (`Utc u));
-                  Ok ()
-              | `Local l ->
-                  until := Some (`Until (`Local l));
-                  Ok ())
-        | [ "INTERVAL"; value ] ->
-            interval := Some (int_of_string value);
-            Ok ()
-        | [ "BYDAY"; value ] ->
-            (* Parse day specifications like MO,WE,FR or 1MO,-1FR *)
-            let days = String.split_on_char ',' value in
-            let parse_day day =
-              (* Extract ordinal if present (like 1MO or -1FR) *)
-              let ordinal, day_code =
-                if
-                  String.length day >= 3
-                  && (String.get day 0 = '+'
-                     || String.get day 0 = '-'
-                     || (String.get day 0 >= '0' && String.get day 0 <= '9'))
-                then (
-                  let idx = ref 0 in
-                  while
-                    !idx < String.length day
-                    && (String.get day !idx = '+'
-                       || String.get day !idx = '-'
-                       || String.get day !idx >= '0'
-                          && String.get day !idx <= '9')
-                  do
-                    incr idx
-                  done;
-                  let ord_str = String.sub day 0 !idx in
-                  let day_str =
-                    String.sub day !idx (String.length day - !idx)
-                  in
-                  (int_of_string ord_str, day_str))
-                else (0, day)
-              in
-              let* weekday =
-                match day_code with
-                | "MO" -> Ok `Monday
-                | "TU" -> Ok `Tuesday
-                | "WE" -> Ok `Wednesday
-                | "TH" -> Ok `Thursday
-                | "FR" -> Ok `Friday
-                | "SA" -> Ok `Saturday
-                | "SU" -> Ok `Sunday
-                | _ -> Error (`Msg ("Invalid weekday: " ^ day_code))
-              in
-              Ok (ordinal, weekday)
-            in
-            let* day_specs = combine_results (List.map parse_day days) in
-            by_parts := `Byday day_specs :: !by_parts;
-            Ok ()
-        | [ "BYMONTHDAY"; value ] ->
-            let days = String.split_on_char ',' value in
-            let month_days = List.map int_of_string days in
-            by_parts := `Bymonthday month_days :: !by_parts;
-            Ok ()
-        | [ "BYMONTH"; value ] ->
-            let months = String.split_on_char ',' value in
-            let month_nums = List.map int_of_string months in
-            by_parts := `Bymonth month_nums :: !by_parts;
-            Ok ()
-        | _ -> Ok ())
-      parts
-  in
-  let* _ = combine_results results in
-  match !freq with
-  | Some f ->
-      let limit =
-        match (!count, !until) with
-        | Some c, None -> Some c
-        | None, Some u -> Some u
-        | _ -> None
-      in
-      let recurrence = (f, limit, !interval, !by_parts) in
-      Ok recurrence
-  | None -> Error (`Msg "FREQ is required in recurrence rule")
+let parse_recurrence rrule =
+  let rrule = String.trim rrule in
+  Calendar_codec.parse_event_rrule rrule
+  |> Result.map_error (fun message ->
+      `Msg
+        ("Invalid recurrence rule" ^ if message = "" then "" else ": " ^ message))
 
-let parse_alarm s =
+let parse_duration_seconds s =
+  let ( let* ) = Result.bind in
   let s = String.lowercase_ascii (String.trim s) in
   let len = String.length s in
-  if len = 0 then Error (`Msg "Empty alarm specification")
+  if len = 0 then Error (`Msg "Empty duration specification")
   else
     let rec parse_parts i total_seconds =
       if i >= len then Ok total_seconds
       else
         (* read digits *)
         let j = ref i in
-        while !j < len && s.[!j] >= '0' && s.[!j] <= '9' do incr j done;
-        if !j = i then Error (`Msg ("Invalid alarm format: " ^ s))
+        while !j < len && s.[!j] >= '0' && s.[!j] <= '9' do
+          incr j
+        done;
+        if !j = i then Error (`Msg ("Invalid duration format: " ^ s))
         else
-          let num = int_of_string (String.sub s i (!j - i)) in
-          if !j >= len then Error (`Msg ("Missing unit suffix in alarm: " ^ s))
+          let* num =
+            match int_of_string_opt (String.sub s i (!j - i)) with
+            | Some number -> Ok number
+            | None -> Error (`Msg ("Duration value is out of range: " ^ s))
+          in
+          if !j >= len then
+            Error (`Msg ("Missing unit suffix in duration: " ^ s))
           else
             let unit_start = !j in
-            while !j < len && not (s.[!j] >= '0' && s.[!j] <= '9') do incr j done;
+            while !j < len && not (s.[!j] >= '0' && s.[!j] <= '9') do
+              incr j
+            done;
             let unit_str = String.sub s unit_start (!j - unit_start) in
-            let multiplier = match unit_str with
+            let multiplier =
+              match unit_str with
               | "s" | "sec" | "second" | "seconds" -> Ok 1
               | "m" | "min" | "minute" | "minutes" -> Ok 60
               | "h" | "hr" | "hour" | "hours" -> Ok 3600
@@ -429,23 +416,35 @@ let parse_alarm s =
               | "w" | "week" | "weeks" -> Ok 604800
               | _ -> Error (`Msg ("Unknown alarm time unit: " ^ unit_str))
             in
-            match multiplier with
-            | Error e -> Error e
-            | Ok m -> parse_parts !j (total_seconds + num * m)
+            let* multiplier = multiplier in
+            if num > (max_int - total_seconds) / multiplier then
+              Error (`Msg ("Duration value is out of range: " ^ s))
+            else parse_parts !j (total_seconds + (num * multiplier))
     in
-    let ( let* ) = Result.bind in
     let* seconds = parse_parts 0 0 in
-    Ok (Ptime.Span.of_int_s (- seconds))
+    if seconds = 0 then Error (`Msg "Duration must be greater than zero")
+    else Ok seconds
+
+let parse_duration value =
+  Result.map
+    (fun seconds -> Ptime.Span.of_int_s seconds)
+    (parse_duration_seconds value)
+
+let parse_alarm value =
+  Result.map
+    (fun seconds -> Ptime.Span.of_int_s (-seconds))
+    (parse_duration_seconds value)
 
 let make_display_alarm span =
   let open Icalendar in
-  `Display {
-    trigger = (Params.empty, `Duration span);
-    duration_repeat = None;
-    summary = None;
-    other = [];
-    special = { description = None };
-  }
+  `Display
+    {
+      trigger = (Params.empty, `Duration span);
+      duration_repeat = None;
+      summary = None;
+      other = [];
+      special = { description = Some (Params.empty, "Reminder") };
+    }
 
 let parse_alarms alarm_strings =
   let ( let* ) = Result.bind in
@@ -460,7 +459,9 @@ let parse_alarms alarm_strings =
 let alarm_format_manpage_entries =
   [
     `S "ALARM";
-    `P "Alarm trigger duration before the event/todo start. Can be specified multiple times for multiple alarms.";
+    `P
+      "Alarm trigger duration before the event/todo start. Can be specified \
+       multiple times for multiple alarms.";
     `I ("15m", "15 minutes before");
     `I ("1h", "1 hour before");
     `I ("1d", "1 day before");
