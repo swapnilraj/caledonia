@@ -1,201 +1,178 @@
-type component_type = CEvent | CTodo | CJournal [@@deriving sexp]
+type body = Event of Event.t | Todo of Todo.t | Journal of Journal.t
+type t = { source : Component_source.t; body : body }
 
-type t =
-  | Event of Event.t
-  | Todo of Todo.t
-  | Journal of Journal.t
+module Identity_set = Set.Make (struct
+  type t = Component_identity.t
 
-let sexp_of_t = function
-  | Event e -> Event.sexp_of_t e
-  | Todo t -> Todo.sexp_of_t t
-  | Journal j -> Journal.sexp_of_t j
+  let compare = Component_identity.compare
+end)
 
-let component_type = function
-  | Event _ -> CEvent
-  | Todo _ -> CTodo
-  | Journal _ -> CJournal
+let component_type_body = function
+  | Event _ -> Component_kind.Event
+  | Todo _ -> Component_kind.Todo
+  | Journal _ -> Component_kind.Journal
 
-let of_event e = Event e
-let of_todo t = Todo t
-let of_journal j = Journal j
+let event_body event = Event event
+let todo_body todo = Todo todo
+let journal_body journal = Journal journal
 
-let to_event = function Event e -> Some e | _ -> None
-let to_todo = function Todo t -> Some t | _ -> None
-let to_journal = function Journal j -> Some j | _ -> None
+let event_of_body = function
+  | Event event -> Some event
+  | Todo _ | Journal _ -> None
 
-let get_id = function
+let body t = t.body
+let component_type t = component_type_body t.body
+
+let body_components = function
+  | Event event ->
+      Event.authored_events event |> List.map (fun event -> `Event event)
+  | Todo todo -> [ `Todo (Todo.to_ical_todo todo, Todo.get_alarms todo) ]
+  | Journal journal -> [ `Journal (Journal.to_ical_journal journal) ]
+
+let body_identity body =
+  match body_components body with
+  | component :: _ -> Component_identity.of_ical_component component
+  | [] -> None
+
+let identity_of_body body =
+  match body_identity body with
+  | Some identity -> identity
+  | None -> invalid_arg "Supported component body has no writable UID"
+
+let ical_components_of_body = body_components
+
+let stored_of_decoded_body ~source body =
+  match body_identity body with
+  | Some _ -> Ok { source; body }
+  | None -> Error (`Msg "Supported component body has no writable UID")
+
+let to_event t = match t.body with Event event -> Some event | _ -> None
+let to_todo t = match t.body with Todo todo -> Some todo | _ -> None
+
+let to_journal t =
+  match t.body with Journal journal -> Some journal | _ -> None
+
+let body_id = function
   | Event e -> Event.get_id e
   | Todo t -> Todo.get_id t
   | Journal j -> Journal.get_id j
 
-let get_summary = function
+let get_id t = body_id t.body
+
+let body_summary = function
   | Event e -> Event.get_summary e
   | Todo t -> Todo.get_summary t
   | Journal j -> Journal.get_summary j
 
-let get_description = function
+let get_summary t = body_summary t.body
+
+let body_description = function
   | Event e -> Event.get_description e
   | Todo t -> Todo.get_description t
   | Journal j -> Journal.get_description j
 
-let get_categories = function
+let get_description t = body_description t.body
+
+let body_categories = function
   | Event e -> Event.get_categories e
   | Todo t -> Todo.get_categories t
   | Journal j -> Journal.get_categories j
 
-let get_calendar_name = function
-  | Event e -> Event.get_calendar_name e
-  | Todo t -> Todo.get_calendar_name t
-  | Journal j -> Journal.get_calendar_name j
+let get_categories t = body_categories t.body
+let get_source t = t.source
+let get_calendar_name t = Component_source.display_name t.source
+let get_calendar_key t = Component_source.calendar_key t.source
+let get_source_fingerprint t = Component_source.fingerprint t.source
+let get_file t = Component_source.file t.source
 
-let get_file = function
-  | Event e -> Event.get_file e
-  | Todo t -> Todo.get_file t
-  | Journal j -> Journal.get_file j
-
-let get_alarms = function
+let body_alarms = function
   | Event e -> Event.get_alarms e
   | Todo t -> Todo.get_alarms t
   | Journal _ -> []
 
-let get_start = function
-  | Event e -> Some (Event.get_start e)
-  | Todo t -> Todo.get_start t
-  | Journal j -> Journal.get_start j
+let get_alarms t = body_alarms t.body
 
-let to_ical_component = function
-  | Event e -> `Event (Event.to_ical_event e)
+let body_start_result ~floating_tz = function
+  | Event event ->
+      Event.get_start_result ~floating_tz event |> Result.map Option.some
+  | Todo todo -> (
+      match Todo.get_start_time todo with
+      | Some _ -> Todo.get_start_result ~floating_tz todo
+      | None -> Todo.get_due_result ~floating_tz todo)
+  | Journal journal -> Journal.get_start_result ~floating_tz journal
+
+let get_start_result ~floating_tz t = body_start_result ~floating_tz t.body
+
+let body_ical_component = function
+  | Event e -> `Event (Event.master e)
   | Todo t -> `Todo (Todo.to_ical_todo t, Todo.get_alarms t)
   | Journal j -> `Journal (Journal.to_ical_journal j)
 
-let to_ical_calendar = function
-  | Event e -> Event.to_ical_calendar e
-  | Todo t -> Todo.to_ical_calendar t
-  | Journal j -> Journal.to_ical_calendar j
+let get_identity t = identity_of_body t.body
 
-let components_of_icalendar calendar_name ~file calendar =
+let get_recurrence_id_property component =
+  let find properties =
+    List.find_map
+      (function `Recur_id (params, value) -> Some (params, value) | _ -> None)
+      properties
+  in
+  match body_ical_component component.body with
+  | `Event event -> find event.props
+  | `Todo (properties, _) -> find properties
+  | `Journal properties -> find properties
+  | `Freebusy _ | `Timezone _ -> None
+
+let get_target component =
+  Component_target.create ~source:component.source
+    ~identity:(get_identity component)
+
+let stored_views_of_decoded_components ?authored_events ~source components =
   let events =
-    Event.events_of_icalendar calendar_name ~file calendar
-    |> List.map of_event
+    components
+    |> List.filter_map (function `Event event -> Some event | _ -> None)
   in
-  let todos =
-    Todo.todos_of_icalendar calendar_name ~file calendar
-    |> List.map of_todo
+  let ( let* ) = Result.bind in
+  let* events =
+    match authored_events with
+    | None -> Event.of_events_result events
+    | Some authored when List.map fst authored = events ->
+        Event.of_authored_events_result authored
+    | Some _ ->
+        Error
+          (`Msg
+             "Document VEVENT metadata does not match its typed component order")
   in
-  let journals =
-    Journal.journals_of_icalendar calendar_name ~file calendar
-    |> List.map of_journal
+  let rec decode_todos accumulated = function
+    | [] -> Ok (List.rev accumulated)
+    | `Todo body :: rest ->
+        let* todo = Todo.of_ical_body body in
+        decode_todos (todo :: accumulated) rest
+    | (`Event _ | `Journal _ | `Freebusy _ | `Timezone _) :: rest ->
+        decode_todos accumulated rest
   in
-  events @ todos @ journals
-
-(* Comparators *)
-type comparator = t -> t -> int
-
-let by_start a b =
-  match (get_start a, get_start b) with
-  | None, None -> 0
-  | None, Some _ -> 1
-  | Some _, None -> -1
-  | Some ta, Some tb -> Ptime.compare ta tb
-
-let by_summary a b =
-  match (get_summary a, get_summary b) with
-  | None, None -> 0
-  | None, Some _ -> 1
-  | Some _, None -> -1
-  | Some sa, Some sb -> String.compare sa sb
-
-let by_calendar_name a b =
-  String.compare (get_calendar_name a) (get_calendar_name b)
-
-let by_type a b =
-  match (component_type a, component_type b) with
-  | CEvent, CEvent | CTodo, CTodo | CJournal, CJournal -> 0
-  | CEvent, _ -> -1
-  | _, CEvent -> 1
-  | CTodo, CJournal -> -1
-  | CJournal, CTodo -> 1
-
-let descending comp a b = -comp a b
-let chain comp1 comp2 a b =
-  match comp1 a b with 0 -> comp2 a b | n -> n
-
-(* Filters *)
-type filter = t -> bool
-
-let is_type typ comp = component_type comp = typ
-
-let summary_contains pattern comp =
-  match get_summary comp with
-  | Some s -> Re.execp (Re.compile (Re.str pattern |> Re.no_case)) s
-  | None -> false
-
-let description_contains pattern comp =
-  match get_description comp with
-  | Some d -> Re.execp (Re.compile (Re.str pattern |> Re.no_case)) d
-  | None -> false
-
-let in_calendars calendars comp =
-  List.mem (get_calendar_name comp) calendars
-
-let has_categories cats comp =
-  let comp_cats = get_categories comp in
-  List.exists (fun cat -> List.mem cat comp_cats) cats
-
-let and_filter filters comp =
-  List.for_all (fun f -> f comp) filters
-
-let or_filter filters comp =
-  List.exists (fun f -> f comp) filters
-
-let not_filter f comp = not (f comp)
-
-(* Formatting *)
-type format = [ `Text | `Entries | `Json | `Csv | `Ics | `Sexp ]
-
-let format_component ?(format = `Text) ?(tz = !Date.default_timezone) comp =
-  let tz_val = tz () in
-  match comp with
-  | Event e -> Event.format_event ~format ~tz:tz_val e
-  | Todo t -> Todo.format_todo ~format ~tz:tz_val t
-  | Journal j -> Journal.format_journal ~format ~tz:tz_val j
-
-let format_components ?(format = `Text) ?(tz = !Date.default_timezone) ?get_color comps =
-  let events = List.filter_map to_event comps in
-  let todos = List.filter_map to_todo comps in
-  let journals = List.filter_map to_journal comps in
-  let tz_val = tz () in
-  let event_str = Event.format_events ~format ~tz:tz_val ?get_color events in
-  let todo_str = Todo.format_todos ~format ~tz:tz_val ?get_color todos in
-  let journal_str = Journal.format_journals ~format ~tz:tz_val ?get_color journals in
-  match format with
-  | `Json ->
-      Printf.sprintf "{\"events\":%s,\"todos\":%s,\"journals\":%s}" event_str todo_str journal_str
-  | `Sexp ->
-      Printf.sprintf "(:events %s :todos %s :journals %s)" event_str todo_str journal_str
-  | _ ->
-      let parts = [event_str; todo_str; journal_str] in
-      let non_empty = List.filter (fun s -> s <> "") parts in
-      String.concat "\n" non_empty
-
-type alarm_fire = {
-  fire_time : Ptime.t;
-  component : t;
-  alarm : Icalendar.alarm;
-}
-
-let query_alarm_fires ~from ~to_ components =
-  let event_fires =
-    List.filter_map to_event components
-    |> List.concat_map (Event.compute_alarm_fires ~from ~to_)
-    |> List.map (fun (af : Event.alarm_fire) ->
-        { fire_time = af.fire_time; component = Event af.event; alarm = af.alarm })
+  let rec decode_journals accumulated = function
+    | [] -> Ok (List.rev accumulated)
+    | `Journal body :: rest ->
+        let* journal = Journal.of_ical_body body in
+        decode_journals (journal :: accumulated) rest
+    | (`Event _ | `Todo _ | `Freebusy _ | `Timezone _) :: rest ->
+        decode_journals accumulated rest
   in
-  let todo_fires =
-    List.filter_map to_todo components
-    |> List.concat_map (Todo.compute_alarm_fires ~from ~to_)
-    |> List.map (fun (af : Todo.alarm_fire) ->
-        { fire_time = af.fire_time; component = Todo af.todo; alarm = af.alarm })
+  let* todos = decode_todos [] components in
+  let* journals = decode_journals [] components in
+  let bodies =
+    List.map event_body events @ List.map todo_body todos
+    @ List.map journal_body journals
   in
-  let all = event_fires @ todo_fires in
-  List.sort (fun a b -> Ptime.compare a.fire_time b.fire_time) all
+  let rec collect seen accumulated = function
+    | [] -> Ok (List.rev accumulated)
+    | body :: rest ->
+        let* stored = stored_of_decoded_body ~source body in
+        let identity = get_identity stored in
+        if Identity_set.mem identity seen then
+          Error
+            (`Msg "Document contains a duplicate writable component identity")
+        else
+          collect (Identity_set.add identity seen) (stored :: accumulated) rest
+  in
+  collect Identity_set.empty [] bodies
