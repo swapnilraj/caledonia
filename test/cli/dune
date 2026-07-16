@@ -1,0 +1,8 @@
+(executable
+ (name cli_integration)
+ (libraries icalendar sexplib unix yojson))
+
+(rule
+ (alias runtest)
+ (action
+  (run %{exe:cli_integration.exe} %{exe:../../bin/main.exe})))
