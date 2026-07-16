@@ -2,44 +2,41 @@
 
 type t
 
-val sexp_of_t : t -> Sexplib0.Sexp.t
-
 val create :
-  fs:Eio.Fs.dir_ty Eio.Path.t ->
-  calendar_dir_path:string ->
+  now:Ptime.t ->
   ?summary:string ->
   ?start:Icalendar.params * Icalendar.date_or_datetime ->
   ?description:string ->
   ?categories:string list ->
   ?status:Icalendar.status ->
-  string ->
+  unit ->
   (t, [> `Msg of string ]) result
 
 val edit :
-  ?summary:string ->
-  ?start:Icalendar.params * Icalendar.date_or_datetime ->
-  ?description:string ->
-  ?categories:string list ->
-  ?status:Icalendar.status ->
+  now:Ptime.t ->
+  ?summary:string Patch.t ->
+  ?start:(Icalendar.params * Icalendar.date_or_datetime) Patch.t ->
+  ?description:string Patch.t ->
+  ?categories:string list Patch.t ->
+  ?status:Icalendar.status Patch.t ->
   t ->
   (t, [> `Msg of string ]) result
 
-val journals_of_icalendar :
-  string -> file:Eio.Fs.dir_ty Eio.Path.t -> Icalendar.calendar -> t list
+val of_ical_body :
+  Icalendar.journal_prop list -> (t, [> `Msg of string ]) result
+(** Decode and validate one marker-free VJOURNAL body. Physical document
+    traversal remains owned by [Calendar_document]. *)
 
 val to_ical_journal : t -> Icalendar.journal_prop list
-val to_ical_calendar : t -> Icalendar.calendar
-
 val get_id : t -> string
 val get_summary : t -> string option
-val get_start : t -> Ptime.t option
+val get_start_time : t -> Icalendar.date_or_datetime option
+
+val get_start_result :
+  floating_tz:Timedesc.Time_zone.t ->
+  t ->
+  (Ptime.t option, Date.conversion_error) result
+
 val get_description : t -> string option
 val get_categories : t -> string list
 val get_status : t -> Icalendar.status option
-val get_calendar_name : t -> string
-val get_file : t -> Eio.Fs.dir_ty Eio.Path.t
-
-type format = [ `Text | `Entries | `Json | `Csv | `Ics | `Sexp ]
-
-val format_journal : ?format:format -> ?tz:Timedesc.Time_zone.t -> t -> string
-val format_journals : ?format:format -> ?tz:Timedesc.Time_zone.t -> ?get_color:(string -> string option) -> t list -> string
