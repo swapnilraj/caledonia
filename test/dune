@@ -1,6 +1,21 @@
 (library
  (name caledonia_test)
  (inline_tests
-  (deps (source_tree calendar)))
- (libraries caledonia_lib str ptime)
- (preprocess (pps ppx_expect)))
+  (deps
+   (source_tree calendar)
+   ../bin/main.exe))
+ (libraries
+  caledonia_lib
+  caledonia_alarm_watcher
+  eio
+  eio_main
+  icalendar
+  ptime
+  sexplib
+  str
+  unix
+  uutf)
+ (flags
+  (:standard -alert -deprecated))
+ (preprocess
+  (pps ppx_expect)))

@@ -1,3 +1,18 @@
+(library
+ (name caledonia_alarm_watcher)
+ (wrapped false)
+ (modules alarm_watcher)
+ (libraries
+  caledonia_lib
+  eio
+  eio.unix
+  unix
+  (select
+   alarm_watcher.ml
+   from
+   (inotify -> alarm_watcher_inotify.ml)
+   (-> alarm_watcher_poll.ml))))
+
 (executable
  (name main)
  (public_name caled)
@@ -6,22 +21,24 @@
   caledonia_lib
   cmdliner
   fmt
-  logs
-  logs.fmt
-  logs.cli
   re
   ptime
   ptime.clock.os
   eio
   eio_main
   eio.unix
-  timere
   sexplib
   sexplib.unix
-  inotify)
+  uucp
+  uutf
+  uri
+  unix
+  caledonia_alarm_watcher)
  (modules
   main
   query_args
+  command_common
+  output
   event_args
   component_args
   list_cmd

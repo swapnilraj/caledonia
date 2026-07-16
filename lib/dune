@@ -1,23 +1,48 @@
 (library
  (name caledonia_lib)
  (public_name caledonia.lib)
- (modules date event journal todo component calendar_dir sexp format_utils)
+ (modules
+  patch
+  fresh_id
+  monotonic_deadline
+  component_kind
+  component_status
+  component_identity
+  component_source
+  component_target
+  storage_error
+  alarm_fire_id
+  date
+  calendar_codec
+  calendar_document
+  calendar_export
+  property_validation
+  alarm
+  alarm_query
+  alarm_daemon_core
+  event
+  journal
+  todo
+  component
+  component_query
+  calendar_dir
+  sexp
+  format_utils)
  (libraries
   icalendar
   ptime
   ptime.clock.os
   timedesc
-  timere
   fmt
-  logs
   re
   yojson
   uuidm
+  unix
   eio
-  eio_main
-  cmdliner
   sexplib
+  uri
   uutf
-  uucp)
+  uucp
+  uuseg)
  (preprocess
   (pps ppx_deriving.show ppx_deriving.eq ppx_sexp_conv)))
