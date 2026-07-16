@@ -1,7 +1,7 @@
 opam-version: "2.0"
-version: "0.4.0"
-maintainer: "Ryan Gibb <ryan@freumh.org"
-authors: ["Ryan Gibb <ryan@freumh.org"]
+version: "0.5.0"
+maintainer: "Ryan Gibb <ryan@freumh.org>"
+authors: ["Ryan Gibb <ryan@freumh.org>"]
 homepage: "https://ryan.freumh.org/caledonia.html"
 bug-reports: "https://github.com/RyanGibb/caledonia/issues"
 dev-repo: "git+https://github.com/RyanGibb/caledonia.git"
@@ -10,27 +10,30 @@ synopsis: "Command-line calendar tool"
 build: [
   ["dune" "subst"] {pinned}
   ["dune" "build" "-p" name "-j" jobs]
+  ["dune" "runtest" "-p" name "-j" jobs] {with-test}
 ]
 depends: [
-  "ocaml" {>= "4.08.0"}
+  "ocaml" {>= "5.1.0"}
   "dune" {>= "3.4"}
-  "icalendar" {dev}
+  "icalendar"
   "cmdliner" {>= "1.3.0"}
   "ptime" {>= "1.2"}
   "fmt" {>= "0.9.0"}
-  "logs" {>= "0.7.0"}
   "re" {>= "1.12.0"}
   "yojson" {>= "2.2.2"}
   "uuidm" {>= "0.9.9"}
-  "eio" {>= "0.12"}
-  "eio_main" {>= "0.12"}
-  "timere" {>= "0.8.0"}
+  "eio" {>= "0.13"}
+  "eio_main" {>= "0.13"}
   "timedesc" {>= "0.8.0"}
   "ppx_sexp_conv" {>= "0.15.1"}
-  "alcotest" {>= "1.8.0" & with-test}
+  "ppx_deriving" {>= "5.2.1"}
+  "ppx_expect" {with-test}
+  "sexplib" {>= "0.15.1"}
+  "uri" {>= "4.2.0"}
   "uucp" {>= "16.0.0"}
+  "uuseg" {>= "16.0.0"}
   "uutf" {>= "1.0.4"}
-  "inotify" {>= "2.0"}
+  "inotify" {>= "2.6" & os = "linux"}
 ]
 pin-depends: [
   ["icalendar.dev" "git+https://github.com/RyanGibb/icalendar.git#0722a633ed8df8f5ec2fa78d29aa7a8b31687f39"]
