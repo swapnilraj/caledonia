@@ -1,0 +1,35 @@
+(executable
+ (name check_architecture)
+ (modules check_architecture)
+ (libraries str yojson))
+
+(executable
+ (name check_negative_interfaces)
+ (modules check_negative_interfaces)
+ (libraries unix))
+
+(rule
+ (alias runtest)
+ (deps
+  (source_tree ../../lib)
+  (source_tree ../../bin)
+  (source_tree ../../docs)
+  (source_tree ../../emacs)
+  (glob_files ../*.ml)
+  (source_tree ../cli)
+  check_architecture.ml
+  dune)
+ (action
+  (run %{exe:check_architecture.exe} %{workspace_root})))
+
+(rule
+ (alias runtest)
+ (deps
+  (source_tree negative)
+  ../../lib/caledonia_lib.cma)
+ (action
+  (run
+   %{exe:check_negative_interfaces.exe}
+   %{bin:ocamlfind}
+   %{dep:../../lib/caledonia_lib.cma}
+   %{workspace_root}/test/architecture/negative)))
