@@ -7,7 +7,7 @@ DTSTAMP:20250329T000000Z
 DTSTART:20250507T120000Z
 DTEND:20250507T130000Z
 SUMMARY:Tuesday/Thursday in Summer
-DESCRIPTION:Weekly on Tuesday and Thursday, but only in Jun, Jul, Aug
+DESCRIPTION:Weekly on Tuesday and Thursday\, but only in Jun\, Jul\, Aug
 RRULE:FREQ=WEEKLY;BYDAY=TU,TH;BYMONTH=6,7,8
 END:VEVENT
 END:VCALENDAR
