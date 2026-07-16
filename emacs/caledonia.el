@@ -6,7 +6,7 @@
 ;; Maintainer: Ryan Gibb <ryan@freumh.org>
 ;; Version: 0.5.0
 ;; Keywords: calendar
-;; Package-Requires: ((emacs "24.4"))
+;; Package-Requires: ((emacs "27.1"))
 ;; URL: https://ryan.freumh.org/caledonia.html
 
 ;; This file is not part of GNU Emacs.
@@ -21,8 +21,14 @@
 
 (require 'cl-lib)
 (require 'calendar)
+(require 'subr-x)
 (require 'pulse nil t)
 (require 'org)
+
+;; Newer Emacs readers consult this switch for evaluation-capable reader forms.
+;; Declaring it here also makes the dynamic safety binding work on older Emacs
+;; releases whose readers reject those forms unconditionally.
+(defvar read-eval nil)
 
 (defgroup caledonia nil
   "Interface to Caledonia calendar client."
@@ -32,6 +38,21 @@
 (defcustom caledonia-executable (executable-find "caled")
   "Path to the Caledonia executable."
   :type 'string
+  :group 'caledonia)
+
+(defcustom caledonia-server-timeout 5.0
+  "Seconds to wait for a correlated server response."
+  :type 'number
+  :group 'caledonia)
+
+(defcustom caledonia-server-log-limit 100000
+  "Maximum characters retained in each server diagnostic buffer."
+  :type 'integer
+  :group 'caledonia)
+
+(defcustom caledonia-server-frame-limit 1048576
+  "Maximum characters accepted in one protocol frame."
+  :type 'integer
   :group 'caledonia)
 
 (defface caledonia-calendar-name-face
@@ -96,87 +117,266 @@
   "The persistent Caledonia server process.")
 (defvar caledonia--server-buffer-name "*caledonia-server-io*"
   "Buffer for server process I/O.")
-(defvar caledonia--response-line nil
-  "Last response line received.")
-(defvar caledonia--response-flag nil
-  "Non-nil means a response has been received.")
+(defvar caledonia--server-error-buffer-name "*caledonia-server-errors*"
+  "Buffer for server diagnostics, kept separate from protocol stdout.")
+(defvar caledonia--server-error-process nil
+  "Pipe process used to keep server stderr bounded.")
+(defvar caledonia--pending-responses (make-hash-table :test #'equal)
+  "Responses keyed by protocol request ID.")
+(defvar caledonia--request-sequence 0
+  "Monotonic request sequence for this Emacs session.")
+(defvar caledonia--handshake-complete nil
+  "Non-nil after protocol version 1 has been negotiated.")
 
 ;; Server communication
 
 (defvar caledonia--server-line-buffer "")
 
+(defun caledonia--trim-log-buffer (buffer)
+  "Trim BUFFER to `caledonia-server-log-limit' characters."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (when (> (buffer-size) caledonia-server-log-limit)
+        (let ((inhibit-read-only t))
+          (delete-region (point-min)
+                         (- (point-max) caledonia-server-log-limit)))))))
+
+(defun caledonia--server-error-filter (_process output)
+  "Append server stderr OUTPUT to its bounded diagnostics buffer."
+  (with-current-buffer
+      (get-buffer-create caledonia--server-error-buffer-name)
+    (let ((inhibit-read-only t))
+      (goto-char (point-max))
+      (insert output)
+      (caledonia--trim-log-buffer (current-buffer)))))
+
+(defun caledonia--stop-server-error-process ()
+  "Dispose of the current server stderr pipe, if any."
+  (when (and caledonia--server-error-process
+             (process-live-p caledonia--server-error-process))
+    (delete-process caledonia--server-error-process))
+  (setq caledonia--server-error-process nil))
+
+(defun caledonia--alist-value (key fields)
+  "Return KEY from protocol record FIELDS."
+  (cadr (assq key fields)))
+
+(defconst caledonia--protocol-text-fields
+  '(request_id server_version message
+    id summary start start_local start_utc start_tz
+    end end_local end_tz location description alarms file calendar
+    calendar_key source_fingerprint source_ics occurrence_start
+    occurrence_timezone timezone value tzid rrule name namespace uri)
+  "Protocol record fields whose atomic values are textual, not symbols.")
+
+(defconst caledonia--protocol-text-list-fields
+  '(Calendars categories_value attendees recurrence_set_value)
+  "Protocol fields or constructors containing lists of textual atoms.")
+
+(defun caledonia--protocol-atom-string (value)
+  "Convert a protocol atom VALUE to a string when Emacs read it as a symbol."
+  (if (symbolp value) (symbol-name value) value))
+
+(defun caledonia--normalize-protocol-value (value)
+  "Normalize textual atoms in server protocol VALUE.
+Field names, constructors, booleans, and discriminators such as `kind',
+`action', and `related' remain symbols.  Sexplib emits safe textual atoms
+without quotes, so schema-aware conversion is required before forms use them
+as Emacs strings."
+  (cond
+   ((atom value) value)
+   ((and (symbolp (car value))
+         (consp (cdr value))
+         (null (cddr value)))
+    (let ((key (car value))
+          (field-value (cadr value)))
+      (cond
+       ((memq key caledonia--protocol-text-fields)
+        (list key
+              (if (atom field-value)
+                  (caledonia--protocol-atom-string field-value)
+                (caledonia--normalize-protocol-value field-value))))
+       ((memq key caledonia--protocol-text-list-fields)
+        (list key
+              (if (listp field-value)
+                  (mapcar
+                   (lambda (item)
+                     (if (atom item)
+                         (caledonia--protocol-atom-string item)
+                       (caledonia--normalize-protocol-value item)))
+                   field-value)
+                field-value)))
+       (t (mapcar #'caledonia--normalize-protocol-value value)))))
+   (t (mapcar #'caledonia--normalize-protocol-value value))))
+
 (defun caledonia--server-filter (process output)
   "Filter PROCESS OUTPUT."
-  ;; Append to the ongoing buffer for logging/debugging
-  (when (buffer-live-p (process-buffer process))
-    (with-current-buffer (process-buffer process)
-      (goto-char (point-max))
-      (insert output)))
-  ;; Append new output to line buffer
-  (setq caledonia--server-line-buffer (concat caledonia--server-line-buffer output))
-  ;; Extract full lines
-  (let ((lines (split-string caledonia--server-line-buffer "\n")))
-    ;; Keep the last line (possibly incomplete) for next round
-    (setq caledonia--server-line-buffer (car (last lines)))
-    ;; Process all complete lines
-    (dolist (line (butlast lines))
-      (when (and (not caledonia--response-flag)
-                 (not (string-empty-p line)))
-        (setq caledonia--response-line line)
-        (setq caledonia--response-flag t)))))
+  (when (eq process caledonia--server-process)
+    ;; Protocol stdout is logged separately from stderr and kept bounded.
+    (when (buffer-live-p (process-buffer process))
+      (with-current-buffer (process-buffer process)
+        (goto-char (point-max))
+        (insert output)
+        (caledonia--trim-log-buffer (current-buffer))))
+    ;; Append new output to line buffer
+    (setq caledonia--server-line-buffer
+          (concat caledonia--server-line-buffer output))
+    ;; Bound each complete newline-delimited frame and the remaining partial
+    ;; tail independently.  A process filter chunk may legitimately contain
+    ;; many frames whose combined size is larger than the per-frame limit.
+    (let* ((lines (split-string caledonia--server-line-buffer "\n"))
+           (partial-tail (car (last lines)))
+           (complete-lines (butlast lines))
+           (oversized
+            (or (> (length partial-tail) caledonia-server-frame-limit)
+                (cl-some
+                 (lambda (line)
+                   (> (length line) caledonia-server-frame-limit))
+                 complete-lines))))
+      (if oversized
+        (progn
+          (setq caledonia--server-line-buffer "")
+          (with-current-buffer
+              (get-buffer-create caledonia--server-error-buffer-name)
+            (goto-char (point-max))
+            (insert "Client protocol error: response frame exceeded configured limit\n")
+            (caledonia--trim-log-buffer (current-buffer)))
+          (delete-process process))
+        ;; Keep only the final, possibly incomplete line for the next chunk.
+        (setq caledonia--server-line-buffer partial-tail)
+        ;; Process every complete line; request IDs allow interleaved responses.
+        (dolist (line complete-lines)
+          (unless (string-empty-p line)
+            (condition-case err
+                (let* ((read-eval nil)
+                       (parsed (read-from-string line))
+                       (read-end (cdr parsed))
+                       (trailing (substring line read-end))
+                       (response
+                        (caledonia--normalize-protocol-value (car parsed))))
+                  (unless (string-match-p "\\`[[:space:]]*\\'" trailing)
+                    (error "trailing data after response frame"))
+                  (unless (and (listp response) (eq (car response) 'Response))
+                    (error "invalid response envelope: %S" response))
+                  (let* ((fields (cadr response))
+                         (version (caledonia--alist-value 'version fields))
+                         (request-id
+                          (caledonia--alist-value 'request_id fields)))
+                    (unless (equal version 1)
+                      (error "unsupported protocol response version: %S"
+                             version))
+                    (unless (stringp request-id)
+                      (error "response is missing request_id"))
+                    (unless
+                        (eq (gethash request-id caledonia--pending-responses)
+                            :pending)
+                      (error "unsolicited response request_id: %s" request-id))
+                    (puthash request-id response
+                             caledonia--pending-responses)))
+              (error
+               (with-current-buffer
+                   (get-buffer-create caledonia--server-error-buffer-name)
+                 (goto-char (point-max))
+                 (insert (format "Client protocol error: %s\n"
+                                 (error-message-string err)))
+                 (caledonia--trim-log-buffer (current-buffer)))))))))))
 
 (defun caledonia--server-sentinel (process event)
   "Listen on PROCESS for an EVENT."
-  (message "Caledonia Server process event: %s (%s)" process event)
-  (setq caledonia--server-process nil))
+  (when (eq process caledonia--server-process)
+    (message "Caledonia Server process event: %s (%s)" process event)
+    (setq caledonia--server-process nil
+          caledonia--server-line-buffer ""
+          caledonia--handshake-complete nil)
+    (caledonia--stop-server-error-process)
+    (clrhash caledonia--pending-responses)))
+
+(defun caledonia--next-request-id ()
+  "Return a new protocol request ID."
+  (setq caledonia--request-sequence (1+ caledonia--request-sequence))
+  (format "emacs-%d-%d" (emacs-pid) caledonia--request-sequence))
+
+(defun caledonia--request-internal (request)
+  "Send protocol payload REQUEST and return its successful payload."
+  (let* ((request-id (caledonia--next-request-id))
+         (envelope `(Request ((version 1)
+                              (request_id ,request-id)
+                              (request ,request))))
+         (deadline (+ (float-time) caledonia-server-timeout)))
+    (puthash request-id :pending caledonia--pending-responses)
+    (process-send-string caledonia--server-process
+                         (concat (prin1-to-string envelope) "\n"))
+    (while (and (eq (gethash request-id caledonia--pending-responses) :pending)
+                (< (float-time) deadline)
+                (process-live-p caledonia--server-process))
+      (accept-process-output caledonia--server-process 0.1))
+    (let ((response (gethash request-id caledonia--pending-responses)))
+      (remhash request-id caledonia--pending-responses)
+      (when (eq response :pending)
+        (error "Caledonia: timed out after %.1f seconds waiting for %s"
+               caledonia-server-timeout request-id))
+      (unless response
+        (error "Caledonia: server exited while waiting for %s" request-id))
+      (let* ((fields (cadr response))
+             (status (caledonia--alist-value 'response fields)))
+        (pcase status
+          (`(Ok ,payload) payload)
+          (`(Error ,error-fields)
+           (let ((code (caledonia--alist-value 'code error-fields))
+                 (message (caledonia--alist-value 'message error-fields)))
+             (error "Caledonia [%s]: %s" code message)))
+          (_ (error "Caledonia: invalid response status: %S" status)))))))
 
 (defun caledonia--ensure-server-running ()
   "Run the caledonia binary in server mode."
   (unless (and caledonia--server-process (process-live-p caledonia--server-process))
     (message "Caledonia  Starting server...")
+    (setq caledonia--server-line-buffer ""
+          caledonia--handshake-complete nil)
+    (clrhash caledonia--pending-responses)
+    (caledonia--stop-server-error-process)
+    (setq caledonia--server-error-process
+          (make-pipe-process
+           :name "caledonia-server-stderr"
+           :buffer nil
+           :filter #'caledonia--server-error-filter
+           :coding 'utf-8-unix
+           :noquery t))
     (setq caledonia--server-process
-          (start-process "caledonia-server"
-                         (get-buffer-create caledonia--server-buffer-name)
-                         caledonia-executable
-                         "server"))
+          (make-process
+           :name "caledonia-server"
+           :buffer (get-buffer-create caledonia--server-buffer-name)
+           :stderr caledonia--server-error-process
+           :command (list caledonia-executable "server")
+           :connection-type 'pipe
+           :noquery t))
     (unless (and caledonia--server-process (process-live-p caledonia--server-process))
       (error "Caledonia  Failed to start server process"))
     (set-process-filter caledonia--server-process #'caledonia--server-filter)
     (set-process-sentinel caledonia--server-process #'caledonia--server-sentinel)
+    (let ((hello (caledonia--request-internal 'Handshake)))
+      (unless (and (listp hello) (eq (car hello) 'Hello)
+                   (equal (caledonia--alist-value
+                           'protocol_version (cadr hello))
+                          1))
+        (delete-process caledonia--server-process)
+        (error "Caledonia: protocol handshake failed: %S" hello))
+      (setq caledonia--handshake-complete t))
     (message "Caledonia  Server started.")))
 
-(defun caledonia--send-request (request-str)
-  "Send REQUEST-STR and get response back."
+(defun caledonia--send-request (request)
+  "Send protocol payload REQUEST and return its successful payload."
   (caledonia--ensure-server-running)
-  (setq caledonia--response-line nil)
-  (setq caledonia--response-flag nil)
-  (process-send-string caledonia--server-process (concat request-str "\n"))
-  ;; Wait for response
-  (let ((start-time (current-time)))
-    (while (and (not caledonia--response-flag)
-                (< (time-to-seconds (time-since start-time)) 5) ; 5 sec timeout
-                (process-live-p caledonia--server-process))
-      (accept-process-output caledonia--server-process 0 100000))) ; Wait 100ms
-  (unless caledonia--response-flag
-    (error "Caledonia  Timeout or server died waiting for response"))
-  (let ((response-sexp (condition-case nil
-                           (read caledonia--response-line)
-                         (error (error "Caledonia: failed to parse response: %s"
-                                       caledonia--response-line)))))
-    (unless (and (listp response-sexp) (memq (car response-sexp) '(Ok Error)))
-      (error "Caledonia: invalid response format: %S" response-sexp))
-    (if (eq (car response-sexp) 'Error)
-        (error "Caledonia: %s" (cadr response-sexp))
-      (cadr response-sexp))))
+  (unless caledonia--handshake-complete
+    (error "Caledonia: server handshake is incomplete"))
+  (caledonia--request-internal request))
 
 (defun caledonia--get-events (event-payload)
   "Parse EVENT-PAYLOAD of structure (Events (events...))."
   (if (and (listp event-payload) (eq (car event-payload) 'Events))
       (let ((event-list (cadr event-payload)))
         event-list)
-    (error
-     (message "Failed to parse Caledonia output: %s" (error-message-string err))
-     nil)))
+    (error "Caledonia: invalid Events payload: %S" event-payload)))
 
 ;; Helper functions
 
@@ -197,7 +397,39 @@ in UTC to avoid any local timezone conversion."
     (cond
      ((null value) nil)
      ((stringp value) value)
-     ((symbolp value) (symbol-name value)))))
+     ((symbolp value) (symbol-name value))
+     (t value))))
+
+(defun caledonia--protocol-time-display (time)
+  "Return editable display text for structured protocol TIME."
+  (when time
+    (let ((value (caledonia--alist-value 'value time)))
+      (and value (replace-regexp-in-string "T" " " value t t)))))
+
+(defun caledonia--protocol-timezone-display (time)
+  "Return timezone form text for structured protocol TIME."
+  (when time
+    (pcase (caledonia--alist-value 'kind time)
+      ('utc "UTC")
+      ('floating "FLOATING")
+      ('tzid (caledonia--alist-value 'tzid time))
+      (_ nil))))
+
+(defun caledonia--protocol-end-time (end)
+  "Return the calendar time nested in structured END, if it is DTEND."
+  (when (and end (eq (caledonia--alist-value 'kind end) 'dtend))
+    (caledonia--alist-value 'value end)))
+
+(defun caledonia--protocol-end-display (end)
+  "Return editable form text for structured END, including DURATION."
+  (when end
+    (pcase (caledonia--alist-value 'kind end)
+      ('dtend
+       (caledonia--protocol-time-display
+        (caledonia--alist-value 'value end)))
+      ('duration
+       (format "duration:%s" (caledonia--alist-value 'seconds end)))
+      (_ nil))))
 
 (defun caledonia--find-and-highlight-event-in-file (file event-id)
   "Find EVENT-ID in FILE, position cursor, and highlight the event.
@@ -331,7 +563,7 @@ The from-date can be nil to indicate no start date constraint."
 
 (defun caledonia--get-available-calendars ()
   "Get list of available calendar names from server."
-  (let ((response (caledonia--send-request "ListCalendars")))
+  (let ((response (caledonia--send-request 'ListCalendars)))
     (if (and (listp response) (eq (car response) 'Calendars))
         (cadr response)
       nil)))
@@ -411,9 +643,28 @@ The from-date can be nil to indicate no start date constraint."
 (defun caledonia--parse-iso-date (iso-string)
   "Parse ISO-STRING and return (year month day hour minute).
 Extracts components directly without timezone conversion."
-  (let ((parsed (parse-time-string iso-string)))
-    (list (nth 5 parsed) (nth 4 parsed) (nth 3 parsed)
-          (or (nth 2 parsed) 0) (or (nth 1 parsed) 0))))
+  (unless (and
+           (stringp iso-string)
+           (string-match
+            (rx string-start
+                (group (= 4 digit)) "-"
+                (group (= 2 digit)) "-"
+                (group (= 2 digit))
+                (opt "T"
+                     (group (= 2 digit)) ":"
+                     (group (= 2 digit))
+                     (opt ":" (= 2 digit) (opt "." (+ digit)))
+                     (opt (or "Z"
+                              (seq (any "+-") (= 2 digit) ":"
+                                   (= 2 digit)))))
+                string-end)
+            iso-string))
+    (error "Invalid ISO calendar date: %S" iso-string))
+  (list (string-to-number (match-string 1 iso-string))
+        (string-to-number (match-string 2 iso-string))
+        (string-to-number (match-string 3 iso-string))
+        (string-to-number (or (match-string 4 iso-string) "0"))
+        (string-to-number (or (match-string 5 iso-string) "0"))))
 
 (defun caledonia--format-day-header (year month day)
   "Format a day header like \"Monday     10 March 2025\" from YEAR, MONTH, DAY."
@@ -434,7 +685,8 @@ Extracts components directly without timezone conversion."
 (defun caledonia--render-agenda (events &optional from-date to-date)
   "Render EVENTS in agenda format, grouped by date.
 Shows all days between FROM-DATE and TO-DATE, including empty days.
-FROM-DATE and TO-DATE are (year month day) lists.  When nil, derived from events."
+FROM-DATE and TO-DATE are (year month day) lists.  When nil, they are
+derived from events."
   (let ((day-groups (make-hash-table :test 'equal)))
     ;; Group events by date (multi-day events appear on each day they span)
     ;; Use local times for date grouping so events appear on the correct local day
@@ -460,15 +712,27 @@ FROM-DATE and TO-DATE are (year month day) lists.  When nil, derived from events
                                (append (gethash date-key day-groups) (list event))
                                day-groups)))))
     ;; Find date range
-    (when events
+    (when (or events (and from-date to-date))
       (let* ((first-event (car events))
              (last-event (car (last events)))
-             (first-parsed (caledonia--parse-iso-date (or (caledonia--get-key 'start_local first-event)
-                                                           (caledonia--get-key 'start first-event))))
-             (last-parsed (caledonia--parse-iso-date (or (caledonia--get-key 'start_local last-event)
-                                                         (caledonia--get-key 'start last-event))))
-             (range-start (or from-date (list (nth 0 first-parsed) (nth 1 first-parsed) (nth 2 first-parsed))))
-             (range-end (or to-date (list (nth 0 last-parsed) (nth 1 last-parsed) (nth 2 last-parsed))))
+             (first-parsed
+              (when first-event
+                (caledonia--parse-iso-date
+                 (or (caledonia--get-key 'start_local first-event)
+                     (caledonia--get-key 'start first-event)))))
+             (last-parsed
+              (when last-event
+                (caledonia--parse-iso-date
+                 (or (caledonia--get-key 'start_local last-event)
+                     (caledonia--get-key 'start last-event)))))
+             (range-start
+              (or from-date
+                  (list (nth 0 first-parsed) (nth 1 first-parsed)
+                        (nth 2 first-parsed))))
+             (range-end
+              (or to-date
+                  (list (nth 0 last-parsed) (nth 1 last-parsed)
+                        (nth 2 last-parsed))))
              (start-abs (caledonia--date-to-absolute (nth 0 range-start) (nth 1 range-start) (nth 2 range-start)))
              (end-abs (caledonia--date-to-absolute (nth 0 range-end) (nth 1 range-end) (nth 2 range-end))))
         ;; Iterate over every day in the range
@@ -552,7 +816,7 @@ FROM-DATE and TO-DATE are (year month day) lists.  When nil, derived from events
 With prefix arg NEW-RANGE, prompt for a new date range."
   (interactive "P")
   (when (eq major-mode 'caledonia-agenda-mode)
-    (caledonia--send-request "Refresh")
+    (caledonia--send-request 'Refresh)
     (let* ((query (if new-range
                       (let* ((dates (caledonia--read-date-range))
                              (from (car dates))
@@ -566,8 +830,7 @@ With prefix arg NEW-RANGE, prompt for a new date range."
                             (setq q (append q (list pair)))))
                         q)
                     caledonia-agenda--query))
-           (request-str (format "(Query %s)" (prin1-to-string query)))
-           (payload (caledonia--send-request request-str))
+           (payload (caledonia--send-request `(Query ,query)))
            (events (caledonia--get-events payload))
            (from-date (caledonia--resolve-date-to-ymd (cadr (assq 'from query))))
            (to-date (caledonia--resolve-date-to-ymd (cadr (assq 'to query)))))
@@ -603,20 +866,27 @@ Uses current time for relative dates."
                                               "/usr/lib/zoneinfo"
                                               "/usr/share/lib/zoneinfo"))))
               (when zoneinfo-dir
-                (sort
-                 (cl-remove-if-not
-                  (lambda (s) (string-match-p "/" s))
-                  (mapcar (lambda (f)
-                            (string-remove-prefix (concat zoneinfo-dir "/") f))
-                          (directory-files-recursively
-                           zoneinfo-dir ""
-                           nil
-                           (lambda (dir)
-                             (let ((name (file-name-nondirectory dir)))
-                               (member name '("Africa" "America" "Antarctica" "Arctic"
-                                              "Asia" "Atlantic" "Australia" "Europe"
-                                              "Indian" "Pacific" "Etc")))))))
-                 #'string<))))))
+                (let ((metadata
+                       (rx string-start
+                           (or "+VERSION" "leapseconds" "localtime"
+                               "posixrules" "tzdata.zi"
+                               (seq "iso3166.tab" string-end)
+                               (seq "zone" (opt "1970") ".tab" string-end)
+                               (seq "leap" (* nonl) ".list" string-end)))))
+                  (sort
+                   (cl-loop
+                    for file in
+                    (directory-files-recursively
+                     zoneinfo-dir "." nil
+                     (lambda (dir)
+                       (not (member (file-name-nondirectory
+                                     (directory-file-name dir))
+                                    '("posix" "right" "SystemV")))))
+                    for relative = (file-relative-name file zoneinfo-dir)
+                    unless (or (file-directory-p file)
+                               (string-match-p metadata relative))
+                    collect relative)
+                   #'string<)))))))
 
 ;; Event form buffer
 
@@ -629,11 +899,26 @@ Uses current time for relative dates."
 (defvar-local caledonia-event-form--id nil
   "Event ID when editing.")
 
+(defvar-local caledonia-event-form--calendar-key nil
+  "Stable calendar directory key when editing.")
+
+(defvar-local caledonia-event-form--file nil
+  "Physical source file identity when editing.")
+
+(defvar-local caledonia-event-form--source-fingerprint nil
+  "Source fingerprint captured when the edit form was opened.")
+
+(defvar-local caledonia-event-form--original nil
+  "Original form strings used to construct explicit Keep/Clear/Set patches.")
+
 (defvar-local caledonia-event-form--return-buffer nil
   "Buffer to return to after form submission.")
 
 (defvar-local caledonia-event-form--occurrence-start nil
-  "When editing a single occurrence, the RFC 3339 start_utc of that occurrence.")
+  "Exact RFC 3339 recurrence identity when editing one occurrence.")
+
+(defvar-local caledonia-event-form--occurrence-timezone nil
+  "Query timezone used to interpret the selected recurrence identity.")
 
 (defvar caledonia-event-form--date-fields '("Start" "End")
   "Field names that should use org-read-date.")
@@ -666,21 +951,26 @@ Uses current time for relative dates."
 \\[caledonia-event-form-submit] to submit, \\[caledonia-event-form-cancel] to cancel.
 TAB to next field (opens org-read-date on date fields), S-TAB to previous field.")
 
-(defun caledonia-event-form--insert-field (name &optional value)
+(defun caledonia-event-form--insert-field (name &optional value read-only-value)
   "Insert a form field with NAME as read-only label and VALUE as editable.
-If NAME is \"Description\", the field supports multiple lines."
-  (let ((start (point)))
-    (insert (propertize (format "%s: " name)
+If NAME is \"Description\", the field supports multiple lines.  When
+READ-ONLY-VALUE is non-nil, present VALUE as immutable identity metadata."
+  (insert (propertize (format "%s: " name)
                         'read-only t
                         'front-sticky '(read-only)
                         'rear-nonsticky '(read-only face)
                         'face 'bold
                         'field-name name))
+  (let ((value (or value "")))
+    (when read-only-value
+      (setq value
+            (propertize value 'read-only t 'front-sticky '(read-only)
+                        'rear-nonsticky '(read-only face) 'face 'shadow)))
     (if (string= name "Description")
-        (insert (or value "") "\n")
-      (insert (or value ""))
-      (insert (propertize "\n" 'read-only t
-                          'front-sticky nil
+        (insert value "\n")
+      (insert value)
+    (insert (propertize "\n" 'read-only t
+                        'front-sticky nil
                           'rear-nonsticky '(read-only))))))
 
 (defun caledonia-event-form--insert-help ()
@@ -709,7 +999,19 @@ For the Description field, captures multiple lines up to the help text."
                                 (setq pos (1+ pos)))
                               pos)
                           (line-end-position)))
-             (val (string-trim (buffer-substring-no-properties value-start value-end))))
+             (raw (buffer-substring-no-properties value-start value-end))
+             (val
+              (cond
+               ((string= name "Description")
+                ;; `caledonia-event-form--insert-field' adds exactly one
+                ;; editable separator newline.  Remove that newline while
+                ;; preserving every newline/space authored in the value.
+                (if (and (> (length raw) 0)
+                         (= (aref raw (1- (length raw))) ?\n))
+                    (substring raw 0 -1)
+                  raw))
+               ((member name '("Summary" "Location")) raw)
+               (t (string-trim raw)))))
         (unless (string-empty-p val) val)))))
 
 (defun caledonia-event-form--current-field ()
@@ -834,13 +1136,202 @@ For multi-line fields like Description, walks backwards to find the label."
           (caledonia-event-form--goto-field-value))))))
 
 (defun caledonia-event-form--parse-datetime (str)
-  "Parse STR as \"YYYY-MM-DD HH:MM\" or \"YYYY-MM-DD\".
+  "Parse STR as \"YYYY-MM-DD HH:MM:SS\" or \"YYYY-MM-DD\".
 Returns (date . time) where time may be nil."
   (when str
     (let ((parts (split-string str " ")))
       (cons (car parts)
             (when (and (cdr parts) (string-match-p "^[0-9][0-9]:[0-9][0-9]" (cadr parts)))
               (cadr parts))))))
+
+(defun caledonia-event-form--time-input (text timezone)
+  "Build a structured protocol calendar time from TEXT and TIMEZONE."
+  (let* ((parsed (caledonia-event-form--parse-datetime text))
+         (date (car parsed))
+         (time (cdr parsed)))
+    (unless date
+      (user-error "A date is required"))
+    (if (not time)
+        `((kind Date) (value ,date))
+      (let ((value (concat date "T" time))
+            (timezone (or timezone "")))
+        (cond
+         ((string= timezone "UTC") `((kind Utc) (value ,value)))
+         ((or (string-empty-p timezone) (string= timezone "FLOATING"))
+          `((kind Floating) (value ,value)))
+         (t `((kind (Tzid ,timezone)) (value ,value))))))))
+
+(defun caledonia-event-form--patch (field value &optional transform)
+  "Return an explicit patch for FIELD's VALUE compared with the original.
+Apply TRANSFORM to non-empty Set values."
+  (let ((original (cdr (assoc field caledonia-event-form--original))))
+    (cond
+     ((equal value original) 'Keep)
+     ((null value) 'Clear)
+     (t `(Set ,(if transform (funcall transform value) value))))))
+
+(defun caledonia-event-form--time-patch (field timezone-field value timezone)
+  "Return a time patch using FIELD, TIMEZONE-FIELD, VALUE and TIMEZONE."
+  (if (and (equal value (cdr (assoc field caledonia-event-form--original)))
+           (equal timezone
+                  (cdr (assoc timezone-field caledonia-event-form--original))))
+      'Keep
+    (if (null value)
+        'Clear
+      `(Set ,(caledonia-event-form--time-input value timezone)))))
+
+(defun caledonia-event-form--end-patch (value timezone)
+  "Return an explicit event-end patch for VALUE and TIMEZONE."
+  (if (and (equal value (cdr (assoc "End" caledonia-event-form--original)))
+           (equal timezone
+                  (cdr (assoc "End Timezone"
+                              caledonia-event-form--original))))
+      'Keep
+    (if (null value)
+        'Clear
+      `(Set ,(caledonia-event-form--end-input value timezone)))))
+
+(defun caledonia-event-form--recurrence-patch
+    (rrule clear-recurrence occurrence-p)
+  "Build an explicit recurrence patch from RRULE and CLEAR-RECURRENCE.
+OCCURRENCE-P forces Keep because recurrence belongs to the series master."
+  (if occurrence-p
+      'Keep
+    (let ((clear
+           (and clear-recurrence
+                (downcase (string-trim clear-recurrence)))))
+      (cond
+       ((member clear '("yes" "y" "true" "1")) 'Clear)
+       ((and clear (not (string-empty-p clear)))
+        (user-error "Clear Recurrence must be yes or left blank"))
+       (t
+        (let ((patch (caledonia-event-form--patch "Recurrence" rrule)))
+          (pcase patch
+            (`(Set ,value) `(Set ((rrule ,value))))
+            (_ patch))))))))
+
+(defun caledonia-event-form--end-input (value timezone)
+  "Build a DTEND or DURATION protocol value from form VALUE and TIMEZONE."
+  (if (string-match "\\`duration:\\([0-9]+\\)\\'" value)
+      (let ((seconds (string-to-number (match-string 1 value))))
+        (when (or (<= seconds 0) (and timezone (not (string-empty-p timezone))))
+          (user-error
+           "Duration must be positive seconds and cannot have an end timezone"))
+        `(Duration_seconds ,seconds))
+    `(Dtend ,(caledonia-event-form--time-input value timezone))))
+
+(defun caledonia-event-form--all-patches-keep-p (fields)
+  "Return non-nil when every editable patch in protocol FIELDS is Keep."
+  (cl-every
+   (lambda (name)
+     (eq (caledonia--alist-value name fields) 'Keep))
+   '(summary start end_ location description categories recurrence alarms)))
+
+(defun caledonia--protocol-alarm-attachment-request (attachment)
+  "Convert structured response ATTACHMENT to its request variant."
+  (let ((kind (caledonia--alist-value 'kind attachment))
+        (value (caledonia--alist-value 'value attachment)))
+    (pcase kind
+      ('uri `(Uri ,value))
+      ('binary `(Binary ,value))
+      (_ (user-error "Unsupported alarm attachment kind: %S" kind)))))
+
+(defun caledonia--protocol-alarm-other-request (property)
+  "Convert structured response alarm PROPERTY to its request variant."
+  (let ((kind (caledonia--alist-value 'kind property))
+        (name (caledonia--alist-value 'name property))
+        (value (caledonia--alist-value 'value property)))
+    (pcase kind
+      ('iana `(Iana ((name ,name)
+                     (value ,value)
+                     (parameters
+                      ,(or (caledonia--alist-value 'parameters property)
+                           '())))))
+      ('x `(X ((namespace ,(caledonia--alist-value 'namespace property))
+               (name ,name)
+               (value ,value)
+               (parameters ,(or (caledonia--alist-value 'parameters property)
+                                '())))))
+      (_ (user-error "Unsupported alarm extension kind: %S" kind)))))
+
+(defun caledonia--protocol-alarm-request (alarm)
+  "Convert structured response ALARM to the request representation."
+  (let* ((action (caledonia--alist-value 'action alarm))
+         (trigger (caledonia--alist-value 'trigger alarm))
+         (trigger-kind (caledonia--alist-value 'kind trigger))
+         (request-trigger
+          (if (eq trigger-kind 'relative)
+              `(Relative
+                ((seconds ,(caledonia--alist-value 'seconds trigger))
+                 (related ,(if (eq (caledonia--alist-value 'related trigger)
+                                   'end)
+                               'End
+                             'Start))))
+            `(Absolute ,(caledonia--alist-value 'value trigger))))
+         (fields
+          `((action ,(pcase action
+                       ('audio 'Audio)
+                       ('email 'Email)
+                       ('none 'None_action)
+                       (_ 'Display)))
+            (trigger ,request-trigger))))
+    (let ((parameters (caledonia--alist-value 'parameters trigger)))
+      (when parameters
+        (setq fields (append fields `((trigger_parameters ,parameters))))))
+    (dolist (key '(repeat duration_seconds duration_parameters
+                         repeat_parameters summary summary_parameters
+                         description description_parameters attendee_values))
+      (let ((entry (assq key alarm)))
+        (when entry
+          (setq fields (append fields (list entry))))))
+    (let ((attachment (caledonia--alist-value 'attachment alarm)))
+      (when attachment
+        (setq fields
+              (append fields
+                      `((attachment
+                         ,(caledonia--protocol-alarm-attachment-request
+                           attachment))
+                        (attachment_parameters
+                         ,(or (caledonia--alist-value 'parameters attachment)
+                              '())))))))
+    (let ((other (caledonia--alist-value 'other alarm)))
+      (when other
+        (setq fields
+              (append fields
+                      `((other
+                         ,(mapcar #'caledonia--protocol-alarm-other-request
+                                  other)))))))
+    fields))
+
+(defun caledonia-event-form--parse-alarms (text)
+  "Parse structured alarm list TEXT without evaluating it."
+  (if (null text)
+      nil
+    (condition-case err
+        (let* ((read-eval nil)
+               (parsed (read-from-string text))
+               (value (car parsed))
+               (end (cdr parsed)))
+          (unless (string-match-p "\\`[[:space:]]*\\'" (substring text end))
+            (error "trailing data after structured value"))
+          (unless (listp value)
+            (error "alarms must be a list"))
+          value)
+      (error (user-error "Invalid structured alarms: %s"
+                         (error-message-string err))))))
+
+(defun caledonia-event-form--parse-string-list (text)
+  "Parse TEXT as a list of category strings."
+  (let ((value (caledonia-event-form--parse-alarms text)))
+    (unless (cl-every #'stringp value)
+      (user-error "Categories must be a list of strings"))
+    value))
+
+(defun caledonia--ics-rrule (source)
+  "Extract the first RRULE value from iCalendar SOURCE."
+  (when (and source
+             (string-match "\\(?:\\`\\|\n\\)RRULE:\\([^\r\n]+\\)" source))
+    (match-string 1 source)))
 
 (defun caledonia-event-form-submit ()
   "Submit the event form."
@@ -853,60 +1344,94 @@ Returns (date . time) where time may be nil."
          (timezone (caledonia-event-form--get-field "Timezone"))
          (end-timezone (caledonia-event-form--get-field "End Timezone"))
          (recurrence (caledonia-event-form--get-field "Recurrence"))
+         (clear-recurrence
+          (caledonia-event-form--get-field "Clear Recurrence"))
          (alarms-str (caledonia-event-form--get-field "Alarms"))
-         (alarms (when alarms-str
-                   (mapcar #'string-trim
-                           (split-string alarms-str "," t "[ \t]+"))))
+         (categories-str (caledonia-event-form--get-field "Categories"))
          (location (caledonia-event-form--get-field "Location"))
          (description (caledonia-event-form--get-field "Description"))
-         (start (caledonia-event-form--parse-datetime start-str))
-         (start-date (when start (car start)))
-         (start-time (when start (cdr start)))
-         (end (caledonia-event-form--parse-datetime end-str))
-         (end-date (when end (car end)))
-         (end-time (when end (cdr end)))
          (return-buf caledonia-event-form--return-buffer))
     ;; Submit to server — let server validate, report errors via user-error
     (condition-case err
         (progn
           (pcase type
             ('create
-             (let* ((fields `(("calendar" . ,calendar)
-                              ("summary" . ,summary)
-                              ("start_date" . ,start-date)
-                              ("start_time" . ,start-time)
-                              ("timezone" . ,timezone)
-                              ("end_timezone" . ,end-timezone)
-                              ("end_date" . ,end-date)
-                              ("end_time" . ,end-time)
-                              ("recurrence" . ,recurrence)
-                              ("alarms" . ,alarms)
-                              ("location" . ,location)
-                              ("description" . ,description)))
-                    (request-str (format "(CreateEvent (%s))"
-                                         (caledonia--build-sexp-fields fields))))
-               (caledonia--send-request request-str)
+             (unless (and calendar summary start-str)
+               (user-error "Calendar, Summary, and Start are required"))
+             (let ((fields
+                    `((calendar ,calendar)
+                      (summary ,summary)
+                      (start ,(caledonia-event-form--time-input
+                               start-str timezone)))))
+               (when end-str
+                 (setq fields
+                       (append fields
+                               `((end_
+                                  ,(caledonia-event-form--end-input
+                                    end-str end-timezone))))))
+               (when location
+                 (setq fields (append fields `((location ,location)))))
+               (when description
+                 (setq fields (append fields `((description ,description)))))
+               (when recurrence
+                 (setq fields
+                       (append fields
+                               `((recurrence ((rrule ,recurrence)))))))
+               (when categories-str
+                 (setq fields
+                       (append fields
+                               `((categories
+                                  ,(caledonia-event-form--parse-string-list
+                                    categories-str))))))
+               (when alarms-str
+                 (setq fields
+                       (append fields
+                               `((alarms
+                                  ,(caledonia-event-form--parse-alarms
+                                    alarms-str))))))
+               (caledonia--send-request `(CreateEvent ,fields))
                (message "Event created: %s" summary)))
             ('edit
-             (let* ((id caledonia-event-form--id)
-                    (occurrence-start caledonia-event-form--occurrence-start)
-                    (fields `(("id" . ,id)
-                              ("summary" . ,summary)
-                              ("start_date" . ,start-date)
-                              ("start_time" . ,start-time)
-                              ("end_date" . ,end-date)
-                              ("end_time" . ,end-time)
-                              ("timezone" . ,timezone)
-                              ("end_timezone" . ,end-timezone)
-                              ("recurrence" . ,recurrence)
-                              ("alarms" . ,alarms)
-                              ("location" . ,location)
-                              ("description" . ,description)
-                              ("occurrence_start" . ,occurrence-start)))
-                    (request-str (format "(EditEvent (%s))"
-                                         (caledonia--build-sexp-fields fields))))
-               (caledonia--send-request request-str)
-               (message "Event updated: %s" (or summary "(no summary)")))))
+             (let ((fields
+                    `((id ,caledonia-event-form--id)
+                      (calendar_key ,caledonia-event-form--calendar-key)
+                      (file ,caledonia-event-form--file)
+                      (source_fingerprint
+                       ,caledonia-event-form--source-fingerprint)
+                      (summary ,(caledonia-event-form--patch
+                                 "Summary" summary))
+                      (start ,(caledonia-event-form--time-patch
+                               "Start" "Timezone" start-str timezone))
+                      (end_ ,(caledonia-event-form--end-patch
+                              end-str end-timezone))
+                      (location ,(caledonia-event-form--patch
+                                  "Location" location))
+                      (description ,(caledonia-event-form--patch
+                                     "Description" description))
+                      (categories ,(caledonia-event-form--patch
+                                    "Categories" categories-str
+                                    #'caledonia-event-form--parse-string-list))
+                      (recurrence
+                       ,(caledonia-event-form--recurrence-patch
+                         recurrence clear-recurrence
+                         caledonia-event-form--occurrence-start))
+                      (alarms ,(caledonia-event-form--patch
+                                "Alarms" alarms-str
+                                #'caledonia-event-form--parse-alarms)))))
+               (when caledonia-event-form--occurrence-start
+                 (setq fields
+                       (append
+                        fields
+                        `((occurrence_start
+                           ,caledonia-event-form--occurrence-start)
+                          (occurrence_timezone
+                           ,caledonia-event-form--occurrence-timezone)))))
+               (if (caledonia-event-form--all-patches-keep-p fields)
+                   (message "Event unchanged: %s"
+                            (or summary "(no summary)"))
+                 (caledonia--send-request `(EditEvent ,fields))
+                 (message "Event updated: %s"
+                          (or summary "(no summary)"))))))
           ;; Only close form and refresh on success
           (quit-window t)
           (when (and return-buf (buffer-live-p return-buf))
@@ -948,6 +1473,7 @@ Use C-c C-d on a date field to pick with org-read-date."
         (caledonia-event-form--insert-field "Timezone")
         (caledonia-event-form--insert-field "End Timezone")
         (caledonia-event-form--insert-field "Recurrence")
+        (caledonia-event-form--insert-field "Categories")
         (caledonia-event-form--insert-field "Alarms")
         (caledonia-event-form--insert-field "Location")
         (caledonia-event-form--insert-field "Description")
@@ -956,6 +1482,21 @@ Use C-c C-d on a date field to pick with org-read-date."
       (goto-char (point-min))
       (re-search-forward "^Summary: " nil t))
     (switch-to-buffer-other-window buf)))
+
+(defun caledonia--event-occurrence-context (event)
+  "Return (START . TIMEZONE) only for an explicit occurrence EVENT."
+  (when (caledonia--get-key 'is_occurrence event)
+    (let ((start (caledonia--get-key 'occurrence_start event))
+          (timezone (caledonia--get-key 'occurrence_timezone event)))
+      (when (and start timezone) (cons start timezone)))))
+
+(defun caledonia--event-form-source (event edit-occurrence)
+  "Return occurrence EVENT or its canonical series master for the form."
+  (if (or edit-occurrence
+          (not (caledonia--event-occurrence-context event)))
+      event
+    (or (caledonia--get-key 'series_master event)
+        (user-error "Server response is missing the recurrence master"))))
 
 (defun caledonia-edit-event ()
   "Edit the event at point using a form buffer.
@@ -966,34 +1507,56 @@ If the event is recurring, prompt whether to edit this occurrence or all."
   (let ((event (get-text-property (point) 'event-data)))
     (unless event
       (user-error "No event at point"))
-    (let* ((id (caledonia--get-key 'id event))
+    (let* ((occurrence-context (caledonia--event-occurrence-context event))
+           (selected-summary (or (caledonia--get-key 'summary event) ""))
+           (edit-occurrence
+            (when occurrence-context
+              (let ((scope (completing-read
+                            (format "Edit '%s': " selected-summary)
+                            '("This event" "All events in series")
+                            nil t nil nil "This event")))
+                (string= scope "This event"))))
+           (event (caledonia--event-form-source event edit-occurrence))
+           (id (caledonia--get-key 'id event))
+           (calendar-key (caledonia--get-key 'calendar_key event))
+           (file (caledonia--get-key 'file event))
+           (source-fingerprint
+            (caledonia--get-key 'source_fingerprint event))
            (summary (or (caledonia--get-key 'summary event) ""))
            (location (or (caledonia--get-key 'location event) ""))
            (description (or (caledonia--get-key 'description event) ""))
            (calendar (or (caledonia--get-key 'calendar event) ""))
-           (start (caledonia--get-key 'start event))
-           (end (caledonia--get-key 'end event))
-           (start-tz (or (caledonia--get-key 'start_tz event) ""))
-           (end-tz (or (caledonia--get-key 'end_tz event) ""))
-           (alarms (or (caledonia--get-key 'alarms event) ""))
-           (recurring (caledonia--get-key 'recurring event))
-           (start-utc (caledonia--get-key 'start_utc event))
-           (is-date (caledonia--get-key 'is_date event))
+           (start-value (caledonia--get-key 'start_value event))
+           (end-value (caledonia--get-key 'end_value event))
+           (end-time (caledonia--protocol-end-time end-value))
+           (start-tz (or (caledonia--protocol-timezone-display start-value) ""))
+           (end-tz (or (caledonia--protocol-timezone-display end-time) ""))
+           (alarm-values (or (caledonia--get-key 'alarms_value event) '()))
+           (category-values
+            (or (caledonia--get-key 'categories_value event) '()))
+           (categories
+            (if category-values (prin1-to-string category-values) ""))
+           (alarms
+            (if alarm-values
+                (prin1-to-string
+                 (mapcar #'caledonia--protocol-alarm-request alarm-values))
+              ""))
+           (recurrence-value (caledonia--get-key 'recurrence_value event))
+           (recurrence-set-value
+            (or (caledonia--get-key 'recurrence_set_value event) '()))
+           (recurrence-set-display
+            (when recurrence-set-value
+              (string-join recurrence-set-value " | ")))
+           (recurrence
+            (or (and recurrence-value
+                     (caledonia--alist-value 'rrule recurrence-value))
+                ""))
            (occurrence-start
-            (when recurring
-              (let ((scope (completing-read
-                            (format "Edit '%s': " summary)
-                            '("This event" "All events in series")
-                            nil t nil nil "This event")))
-                (when (string= scope "This event") start-utc))))
-           (start-str (when start
-                        (if is-date
-                            (caledonia--format-timestamp start "%Y-%m-%d")
-                          (caledonia--format-timestamp start "%Y-%m-%d %H:%M"))))
-           (end-str (when end
-                      (if is-date
-                          (caledonia--format-timestamp end "%Y-%m-%d")
-                        (caledonia--format-timestamp end "%Y-%m-%d %H:%M"))))
+            (when edit-occurrence (car occurrence-context)))
+           (occurrence-timezone
+            (when edit-occurrence (cdr occurrence-context)))
+           (start-str (caledonia--protocol-time-display start-value))
+           (end-str (caledonia--protocol-end-display end-value))
            (return-buf (current-buffer))
            (buf (get-buffer-create caledonia-event-form-buffer)))
       (with-current-buffer buf
@@ -1001,17 +1564,39 @@ If the event is recurring, prompt whether to edit this occurrence or all."
         (caledonia-event-form-mode)
         (setq-local caledonia-event-form--type 'edit)
         (setq-local caledonia-event-form--id id)
+        (setq-local caledonia-event-form--calendar-key calendar-key)
+        (setq-local caledonia-event-form--file file)
+        (setq-local caledonia-event-form--source-fingerprint
+                    source-fingerprint)
         (setq-local caledonia-event-form--occurrence-start occurrence-start)
+        (setq-local caledonia-event-form--occurrence-timezone
+                    occurrence-timezone)
         (setq-local caledonia-event-form--return-buffer return-buf)
+        (setq-local caledonia-event-form--original
+                    `(("Summary" . ,(unless (string-empty-p summary) summary))
+                      ("Start" . ,start-str)
+                      ("End" . ,end-str)
+                      ("Timezone" . ,(unless (string-empty-p start-tz) start-tz))
+                      ("End Timezone" . ,(unless (string-empty-p end-tz) end-tz))
+                      ("Recurrence" . ,(unless (string-empty-p recurrence) recurrence))
+                      ("Alarms" . ,(unless (string-empty-p alarms) alarms))
+                      ("Categories" . ,(unless (string-empty-p categories) categories))
+                      ("Location" . ,(unless (string-empty-p location) location))
+                      ("Description" . ,(unless (string-empty-p description) description))))
         (let ((inhibit-read-only t))
-          (caledonia-event-form--insert-field "Calendar" calendar)
+          (caledonia-event-form--insert-field "Calendar" calendar t)
           (caledonia-event-form--insert-field "Summary" summary)
           (caledonia-event-form--insert-field "Start" start-str)
           (caledonia-event-form--insert-field "End" end-str)
           (caledonia-event-form--insert-field "Timezone" start-tz)
           (caledonia-event-form--insert-field "End Timezone" end-tz)
           (unless occurrence-start
-            (caledonia-event-form--insert-field "Recurrence"))
+            (caledonia-event-form--insert-field "Recurrence Set"
+                                                recurrence-set-display t)
+            (caledonia-event-form--insert-field "Recurrence" recurrence)
+            (when recurrence-set-value
+              (caledonia-event-form--insert-field "Clear Recurrence")))
+          (caledonia-event-form--insert-field "Categories" categories)
           (caledonia-event-form--insert-field "Alarms" alarms)
           (caledonia-event-form--insert-field "Location" location)
           (caledonia-event-form--insert-field "Description" description)
@@ -1029,10 +1614,13 @@ If the event is recurring, prompt whether to delete this occurrence or all."
     (unless event
       (user-error "No event at point"))
     (let* ((id (caledonia--get-key 'id event))
+           (calendar-key (caledonia--get-key 'calendar_key event))
+           (file (caledonia--get-key 'file event))
+           (source-fingerprint
+            (caledonia--get-key 'source_fingerprint event))
            (summary (or (caledonia--get-key 'summary event) "(no summary)"))
-           (recurring (caledonia--get-key 'recurring event))
-           (start-utc (caledonia--get-key 'start_utc event))
-           (scope (if recurring
+           (occurrence-context (caledonia--event-occurrence-context event))
+           (scope (if occurrence-context
                       (completing-read
                        (format "Delete '%s': " summary)
                        '("This event" "All events in series")
@@ -1042,11 +1630,17 @@ If the event is recurring, prompt whether to delete this occurrence or all."
                                (if (string= scope "All events in series")
                                    (format "all events in series '%s'" summary)
                                  (format "event '%s'" summary))))
-        (let ((request-str
-               (if (and recurring (string= scope "This event") start-utc)
-                   (format "(DeleteEvent ((id %S)(occurrence_start %S)))" id start-utc)
-                 (format "(DeleteEvent ((id %S)))" id))))
-          (caledonia--send-request request-str)
+        (let ((fields `((id ,id)
+                        (calendar_key ,calendar-key)
+                        (file ,file)
+                        (source_fingerprint ,source-fingerprint))))
+          (when (and occurrence-context (string= scope "This event"))
+            (setq fields
+                  (append
+                   fields
+                   `((occurrence_start ,(car occurrence-context))
+                     (occurrence_timezone ,(cdr occurrence-context))))))
+          (caledonia--send-request `(DeleteEvent ,fields))
           (message "Event deleted: %s" summary)
           (when (eq major-mode 'caledonia-agenda-mode)
             (caledonia-refresh)))))))
@@ -1070,8 +1664,7 @@ FROM-DATE and TO-DATE override defaults. With prefix arg, prompts for dates."
          (buffer (get-buffer-create caledonia--agenda-buffer)))
     (when (and from (not (string-empty-p from)))
       (setq query (append query `((from ,from)))))
-    (let* ((request-str (format "(Query %s)" (prin1-to-string query)))
-           (payload (caledonia--send-request request-str))
+    (let* ((payload (caledonia--send-request `(Query ,query)))
            (events (caledonia--get-events payload)))
       (with-current-buffer buffer
         (let ((inhibit-read-only t))
@@ -1097,8 +1690,7 @@ FROM-DATE and TO-DATE override defaults. With prefix arg, prompts for dates."
          (buffer (get-buffer-create caledonia--agenda-buffer)))
     (when (and from (not (string-empty-p from)))
       (setq query (append query `((from ,from)))))
-    (let* ((request-str (format "(Query %s)" (prin1-to-string query)))
-           (payload (caledonia--send-request request-str))
+    (let* ((payload (caledonia--send-request `(Query ,query)))
            (events (caledonia--get-events payload)))
       (with-current-buffer buffer
         (let ((inhibit-read-only t))
