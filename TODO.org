@@ -6,30 +6,39 @@
 * DONE [[https://github.com/robur-coop/icalendar/pull/13][handle RECURRENCE-ID]]
 * DONE [[https://github.com/robur-coop/icalendar/issues/15][RRULE with local datetime]]
 * DONE server mode
-* DONE hold =Event='s in-memory instead of parsing them for every =Query=
+* DONE reload immutable document snapshots for each server request
+  The persistent server keeps transport state, not a stale calendar cache.
+  Every query and mutation observes current disk bytes and fingerprints.
 * TODO support vdir metadata
 ** DONE displayname
-** TODO colour
+** DONE colour
 ** TODO description
 ** TODO order
-* TODO add timezone all date functions
-* TODO allow editing recurrence-ids
-* TODO support specifying duration
+* DONE add explicit timezone-aware date functions
+* DONE allow editing recurrence-ids
+* DONE support specifying duration
 * TODO CalDAV syncing
 * TODO support complex datetime queries
 * TODO custom date/time formatting
 * TODO support querying text with regex
-* TODO support VTIMEZONE
-* TODO support VALARMS
+* TODO evaluate custom embedded VTIMEZONE rule conversion
+  VTIMEZONE blocks and unknown TZIDs are preserved losslessly. Conversion of a
+  TZID not present in the system timezone database fails explicitly; applying
+  arbitrary embedded transition rules remains future work.
+* DONE support VALARMS
 ** DONE basic alarm support (display, add, edit, show, list)
 ** DONE list alarms firing on a given day (compute event start - trigger for each alarm)
-** DONE alarm notification daemon (dbus notification with persistent notifications)
-* DONE support VOTODS
+** DONE alarm notification daemon
+   Linux defaults to =notify-send=, macOS can use =osascript=, and explicit
+   command/stdout backends are available. Recovery state and retry attempts are
+   persisted and bounded; a permanently failing notification is reported and
+   dropped after three attempts instead of growing replay state indefinitely.
+* DONE support VTODO
 * TODO support VCARDS
 * DONE support VJOURNAL
 * TODO implement TUI front end with something like [[https://github.com/leostera/minttea][minttea]]
 * TODO don't require re-passing date and time to change event timezone
-* TODO implement an emacs front end, like mu4e to mu
+* DONE implement an emacs front end, like mu4e to mu
 ** DONE listing, searching, querying
 ** DONE show details
 ** DONE show file
@@ -40,23 +49,17 @@
 ** DONE support adding, deleting, and editing events
 ** DONE add a org-agenda style view for caledonia-list
 ** TODO check out https://github.com/janestreet/ecaml
-* TODO support more fields for sorting and searching
+* DONE support more fields for sorting and searching
 * TODO command line autocomplete of ids
-* BUG Event details and agenda show times converted to local timezone, not event timezone
-  When an event has a non-local timezone (e.g. =Asia/Kolkata=), both the
-  details view and agenda display the time converted to the system's local
-  timezone (=Europe/London=) but still label it with the event's timezone.
-  For example, an event at 19:30 =Asia/Kolkata= is shown as:
-  - Details: =2026-04-12 16:00 (Asia/Kolkata)= (should be =19:30=)
-  - Agenda: =15:00= (should be =19:30=)
-  The details view shows a different wrong time from the agenda (16:00 vs 15:00),
-  suggesting two different conversion paths are both broken.
-  Times should be displayed in the event's own timezone.
-* BUG Description newlines shown as literal =\n= in event details view
+* DONE Event details and agenda use the explicit query timezone consistently
+  The server returns typed source time plus query-timezone local presentation
+  fields. Details and agenda group/render from the same requested timezone,
+  including non-hour-offset zones, rather than process-local or mixed paths.
+* DONE Description newlines shown as literal =\n= in event details view
   The Emacs details buffer displays description text with literal =\n=
   instead of rendering actual newlines. The =\n= sequences in the
   iCalendar DESCRIPTION field should be unescaped before display.
-* BUG Deleting occurrence of all-day recurring event writes wrong EXDATE
+* DONE Deleting occurrence of all-day recurring event writes wrong EXDATE
   Two issues when deleting a single occurrence of a =VALUE=DATE= recurring event:
   1. *Wrong date*: the occurrence date is being converted through UTC, so e.g.
      April 12 midnight BST (UTC+1) becomes April 11 23:00 UTC, truncated to
@@ -66,15 +69,14 @@
      =EXDATE;VALUE=DATE:20260411=. Without =VALUE=DATE=, the parser treats it as
      a datetime, fails with =check_date_datetime=, and the whole file becomes
      unparseable.
-* TODO =occurrence_start= should accept local times, not just RFC 3339
-  When deleting a single occurrence of a recurring event, =occurrence_start=
-  requires an RFC 3339 timestamp (e.g. =2026-04-11T17:00:00Z=). But DTSTART
-  is stored as local time with TZID (e.g. =TZID=Europe/London:20260411T180000=),
-  so you have to manually compute the UTC offset to pass the right value.
-  Getting this wrong silently produces an EXDATE that doesn't match any
-  occurrence. Should accept a bare local time (e.g. =2026-04-11T18:00:00=)
-  and use the event's TZID to interpret it.
-* TODO =list --type todo= returns nothing because of datetime bounds
+* DONE Occurrence mutations carry typed query identity
+  Query results now return the exact RFC 3339 =occurrence_start= together with
+  the explicit =occurrence_timezone= and typed =recurrence_id_value=. Clients
+  forward that pair for edit/delete instead of manually calculating an offset
+  from a presentation time. Floating, TZID, UTC, and VALUE=DATE occurrences
+  therefore preserve their local RECURRENCE-ID/EXDATE semantics even when the
+  client and server process timezones differ.
+* DONE =list --type todo= returns nothing because of datetime bounds
   Todos typically have no date, so they're excluded by =list='s default date range filter.
   You have to use =search --type todo= instead, which is confusing.
   Either =list= should skip date bounds for todos, or hint the user.
