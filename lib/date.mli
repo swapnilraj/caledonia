@@ -1,183 +1,154 @@
-val default_timezone : (unit -> Timedesc.Time_zone.t) ref
-(** Default timezone to use for date operations. Defaults to the local timezone
-    of the system, falling back to UTC if local timezone cannot be determined.
+(** Explicit, timezone-aware calendar calculations.
+
+    iCalendar DATE and floating values are not instants. Callers must choose the
+    timezone in which those values are interpreted whenever an instant is
+    required. Unknown TZIDs remain losslessly represented by
+    [Icalendar.date_or_datetime] and are reported by conversion functions;
+    embedded VTIMEZONE definitions are retained by the component/document layer
+    but are not yet evaluated by this module. *)
+
+type conversion_error =
+  [ `Unknown_timezone of string
+  | `Nonexistent_local_time of string
+  | `Ambiguous_local_time of string
+  | `Out_of_range of string ]
+
+val validate_date_or_datetime_params :
+  property:string ->
+  Icalendar.params ->
+  Icalendar.date_or_datetime ->
+  (unit, [> `Msg of string ]) result
+(** Validate the complete RFC parameter/value contract of a DATE or DATE-TIME
+    property. DATE requires VALUE=DATE; other VALUE parameters must agree with
+    the typed value when present. TZID is valid only for a timezone-bearing
+    local DATE-TIME and must agree with its embedded timezone; the parser
+    representation where TZID has already been moved into that typed value is
+    also valid. Unrelated standard parameters are rejected, while unknown IANA
+    and X parameters are retained. *)
+
+val validate_integral_seconds :
+  property:string -> Ptime.Span.t -> (unit, [> `Msg of string ]) result
+(** Reject spans that the iCalendar serializer cannot represent losslessly as an
+    integer machine-sized number of seconds. *)
+
+val validate_duration_params :
+  property:string ->
+  Icalendar.params ->
+  Ptime.Span.t ->
+  (unit, [> `Msg of string ]) result
+(** Validate DURATION property parameters. RFC DURATION properties have no
+    standard parameters; unknown IANA and X extension parameters are retained.
 *)
 
-val timedesc_to_ptime : Timedesc.t -> Ptime.t
-(** Convert a Timedesc.t to a Ptime.t. *)
+val string_of_conversion_error : conversion_error -> string
 
-val ptime_to_timedesc : ?tz:Timedesc.Time_zone.t -> Ptime.t -> Timedesc.t
-(** Convert a Ptime.t to a Timedesc.t with the specified timezone. If no
-    timezone is provided, uses the default_timezone. *)
+val rfc3339_utc : Ptime.t -> string
+(** Serialize a known UTC instant with [Z], never RFC 3339's [-00:00]
+    unknown-offset marker. *)
 
-val get_today : (?tz:Timedesc.Time_zone.t -> unit -> Ptime.t) ref
-(** Get the current date at midnight in the specified timezone. If no timezone
-    is provided, uses the default_timezone. This is a reference to support
-    testing. Returns the date or raises an exception if the date cannot be
-    determined. *)
+val local_timezone : unit -> Timedesc.Time_zone.t
+(** Resolve the system timezone for an application boundary such as CLI option
+    handling, falling back deterministically to UTC. This is a function, not
+    mutable process state; calculations still require an explicit [~tz]. *)
 
-val to_end_of_day : Ptime.t -> Ptime.t
-(** Converts a date with midnight time (00:00:00) to the same date with
-    end-of-day time (23:59:59). This is particularly useful for making "to"
-    dates in a range inclusive, addressing the common UX expectation that
-    specifying "--to 2025-04-01" would include events occurring on April 1st. *)
+val ptime_of_ical_result :
+  floating_tz:Timedesc.Time_zone.t ->
+  Icalendar.date_or_datetime ->
+  (Ptime.t, conversion_error) result
+(** Resolve an authored value to an instant. [floating_tz] is the caller's
+    explicit policy for both floating and DATE values. Unknown TZIDs are errors.
+    Per RFC 5545, repeated wall times select the first occurrence and
+    forward-shift gap times use the UTC offset in force immediately before the
+    gap. *)
 
-val add_days : Ptime.t -> int -> Ptime.t
-(** Add specified number of days to a date. Raises an exception if the date
-    cannot be calculated. *)
+val compare_ical_time :
+  floating_tz:Timedesc.Time_zone.t ->
+  Icalendar.date_or_datetime ->
+  Icalendar.date_or_datetime ->
+  (int, conversion_error) result
+(** Compare authored temporal values. DATE, floating, UTC, and two values with
+    the same TZID are ordered directly in their shared representation; in
+    particular, an unknown/custom same-TZID range does not require timezone
+    database resolution. Mixed representations are resolved to instants and can
+    return a typed conversion error. *)
 
-val add_weeks : Ptime.t -> int -> Ptime.t
-(** Add specified number of weeks to a date. Raises an exception if the date
-    cannot be calculated. *)
+val timedesc_to_ptime_result : Timedesc.t -> (Ptime.t, conversion_error) result
 
-val add_months : Ptime.t -> int -> Ptime.t
-(** Add specified number of months to a date. Raises an exception if the date
-    cannot be calculated. *)
+val ptime_to_timedesc_result :
+  tz:Timedesc.Time_zone.t -> Ptime.t -> (Timedesc.t, conversion_error) result
 
-val add_years : Ptime.t -> int -> Ptime.t
-(** Add specified number of months to a date. Raises an exception if the date
-    cannot be calculated. *)
+val ptime_to_timedesc : tz:Timedesc.Time_zone.t -> Ptime.t -> Timedesc.t
+(** Deterministic compatibility wrapper with an explicit timezone. New
+    calculation paths should use {!ptime_to_timedesc_result}. *)
 
-val get_start_of_week : Ptime.t -> Ptime.t
-(** Get the start of the week (Monday) for the given date. Raises an exception
-    if the date cannot be calculated. *)
+val start_of_day_result :
+  tz:Timedesc.Time_zone.t -> Ptime.t -> (Ptime.t, conversion_error) result
 
-val get_start_of_current_week : ?tz:Timedesc.Time_zone.t -> unit -> Ptime.t
-(** Get the start of the current week in the specified timezone. If no timezone
-    is provided, uses the default_timezone. Raises an exception if the date
-    cannot be calculated. *)
+val next_midnight_result :
+  tz:Timedesc.Time_zone.t -> Ptime.t -> (Ptime.t, conversion_error) result
+(** The exclusive upper bound of the local calendar day containing the input. It
+    is intentionally not defined as input plus 24 hours. *)
 
-val get_start_of_next_week : ?tz:Timedesc.Time_zone.t -> unit -> Ptime.t
-(** Get the start of next week in the specified timezone. If no timezone is
-    provided, uses the default_timezone. Raises an exception if the date cannot
-    be calculated. *)
+val today_result :
+  tz:Timedesc.Time_zone.t -> now:Ptime.t -> (Ptime.t, conversion_error) result
 
-val get_end_of_week : Ptime.t -> Ptime.t
-(** Get the end of the week (Monday) for the given date. Raises an exception if
-    the date cannot be calculated. *)
+val add_days_result :
+  tz:Timedesc.Time_zone.t ->
+  Ptime.t ->
+  int ->
+  (Ptime.t, conversion_error) result
 
-val get_end_of_current_week : ?tz:Timedesc.Time_zone.t -> unit -> Ptime.t
-(** Get the end of the current week in the specified timezone. If no timezone is
-    provided, uses the default_timezone. Raises an exception if the date cannot
-    be calculated. *)
+val add_weeks_result :
+  tz:Timedesc.Time_zone.t ->
+  Ptime.t ->
+  int ->
+  (Ptime.t, conversion_error) result
 
-val get_end_of_next_week : ?tz:Timedesc.Time_zone.t -> unit -> Ptime.t
-(** Get the end of next week in the specified timezone. If no timezone is
-    provided, uses the default_timezone. Raises an exception if the date cannot
-    be calculated. *)
+val add_months_result :
+  tz:Timedesc.Time_zone.t ->
+  Ptime.t ->
+  int ->
+  (Ptime.t, conversion_error) result
 
-val get_start_of_month : Ptime.t -> Ptime.t
-(** Get the start of the month for the given date. Raises an exception if the
-    date cannot be calculated. *)
+val add_years_result :
+  tz:Timedesc.Time_zone.t ->
+  Ptime.t ->
+  int ->
+  (Ptime.t, conversion_error) result
 
-val get_start_of_current_month : ?tz:Timedesc.Time_zone.t -> unit -> Ptime.t
-(** Get the start of the current month in the specified timezone. If no timezone
-    is provided, uses the default_timezone. Raises an exception if the date
-    cannot be calculated. *)
-
-val get_start_of_next_month : ?tz:Timedesc.Time_zone.t -> unit -> Ptime.t
-(** Get the start of next month in the specified timezone. If no timezone is
-    provided, uses the default_timezone. Raises an exception if the date cannot
-    be calculated. *)
-
-val get_end_of_current_month : ?tz:Timedesc.Time_zone.t -> unit -> Ptime.t
-(** Get the end of the current month in the specified timezone. If no timezone
-    is provided, uses the default_timezone. Raises an exception if the date
-    cannot be calculated. *)
-
-val get_end_of_next_month : ?tz:Timedesc.Time_zone.t -> unit -> Ptime.t
-(** Get the end of next month in the specified timezone. If no timezone is
-    provided, uses the default_timezone. Raises an exception if the date cannot
-    be calculated. *)
-
-val get_end_of_month : Ptime.t -> Ptime.t
-(** Get the end of the month for the given date. Raises an exception if the date
-    cannot be calculated. *)
-
-val get_start_of_year : Ptime.t -> Ptime.t
-(** Get the start of the year (Jan 1) for the given date. Raises an exception if
-    the date cannot be calculated. *)
-
-val get_start_of_current_year : ?tz:Timedesc.Time_zone.t -> unit -> Ptime.t
-(** Get the start of the current year in the specified timezone. If no timezone
-    is provided, uses the default_timezone. Raises an exception if the date
-    cannot be calculated. *)
-
-val get_start_of_next_year : ?tz:Timedesc.Time_zone.t -> unit -> Ptime.t
-(** Get the start of next year in the specified timezone. If no timezone is
-    provided, uses the default_timezone. Raises an exception if the date cannot
-    be calculated. *)
-
-val get_end_of_year : Ptime.t -> Ptime.t
-(** Get the end of the year (Dec 31, 23:59:59) for the given date. Raises an
-    exception if the date cannot be calculated. *)
-
-val get_end_of_current_year : ?tz:Timedesc.Time_zone.t -> unit -> Ptime.t
-(** Get the end of the current year in the specified timezone. If no timezone is
-    provided, uses the default_timezone. Raises an exception if the date cannot
-    be calculated. *)
-
-val get_end_of_next_year : ?tz:Timedesc.Time_zone.t -> unit -> Ptime.t
-(** Get the end of next year in the specified timezone. If no timezone is
-    provided, uses the default_timezone. Raises an exception if the date cannot
-    be calculated. *)
+val start_of_week_result :
+  tz:Timedesc.Time_zone.t -> Ptime.t -> (Ptime.t, conversion_error) result
 
 val convert_relative_date_formats :
-  ?tz:Timedesc.Time_zone.t ->
+  tz:Timedesc.Time_zone.t ->
+  now:Ptime.t ->
   today:bool ->
   tomorrow:bool ->
   week:bool ->
   month:bool ->
   unit ->
-  (Ptime.t * Ptime.t) option
-(** Converts relative date formats to determine from/to dates in the specified
-    timezone. If no timezone is provided, uses the default_timezone. Returns a
-    tuple of (start_date, end_date) or raises an exception if the dates could
-    not be determined. **)
+  ((Ptime.t * Ptime.t) option, conversion_error) result
+(** Return inclusive local-date endpoints for CLI shorthand. The application
+    boundary converts the second endpoint exactly once to local next midnight.
+*)
 
 val parse_date :
-  ?tz:Timedesc.Time_zone.t ->
+  tz:Timedesc.Time_zone.t ->
+  now:Ptime.t ->
   string ->
   [ `To | `From ] ->
   (Ptime.t, [> `Msg of string ]) result
-(** Parse a date string that could be ISO format (YYYY-MM-DD) or a relative
-    expression in the specified timezone. If no timezone is provided, uses the
-    default_timezone.
-
-    Supported formats:
-    - ISO format:
-    - "YYYY-MM-DD" (full date)
-    - "YYYY-MM" (partial date)
-    - For --from: defaults to first day of month
-    - For --to: defaults to last day of month
-    - "YYYY" (partial date)
-    - For --from: defaults to January 1st of year
-    - For --to: defaults to December 31st of year
-    - Relative expressions:
-    - "today" - Current day
-    - "tomorrow" - Next day
-    - "yesterday" - Previous day
-    - "this-week" - Start of current week
-    - "next-week" - Start of next week
-    - "this-month" - Start of current month
-    - "next-month" - Start of next month
-    - "+Nd" - N days from today (e.g., "+7d" for a week from today)
-    - "-Nd" - N days before today (e.g., "-7d" for a week ago)
-    - "+Nw" - N weeks from today
-    - "+Nm" - N months from today
-    - "+Ny" - N years from today *)
+(** Parse an ISO date/partial date or relative expression. [now] is always
+    injected, even for absolute inputs, so the API can never consult an ambient
+    clock. [`To] returns midnight at the inclusive final local date; callers
+    needing a range convert it once with {!next_midnight_result}. *)
 
 val parse_time : string -> (int * int * int, [> `Msg of string ]) result
-(** Parse a time string in HH:MM or HH:MM:SS format. Returns Ok with (hour,
-    minute, second) or Error with a message. **)
 
 val parse_date_time :
-  ?tz:Timedesc.Time_zone.t ->
+  tz:Timedesc.Time_zone.t ->
+  now:Ptime.t ->
   date:string ->
   time:string ->
   [ `To | `From ] ->
   (Ptime.t, [> `Msg of string ]) result
-(** Parse a date and time string in the specified timezone. If no timezone is
-    provided, uses the default_timezone. *)
-
-val ptime_of_ical : Icalendar.date_or_datetime -> Ptime.t
