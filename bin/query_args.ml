@@ -36,9 +36,9 @@ let format_enum =
 
 let format_arg =
   let doc =
-    "Output format (text, entries, json, csv, ics, sexp). Note that dates are \
-     localised to the TIMEZONE option but the timezone they're defined in is \
-     displayed."
+    "Output format (text, entries, json, csv, ics, sexp). Human text dates are \
+     localised to the TIMEZONE option. Versioned machine formats preserve \
+     authored DATE/UTC/floating/TZID values."
   in
   Arg.(
     value
@@ -46,23 +46,23 @@ let format_arg =
     & info [ "format"; "o" ] ~docv:"FORMAT" ~doc)
 
 let count_arg =
-  let doc = "Maximum number of events to display" in
+  let doc = "Maximum number of components to display" in
   Arg.(value & opt (some int) None & info [ "count"; "n" ] ~docv:"COUNT" ~doc)
 
 let today_arg =
-  let doc = "Show events for today only" in
+  let doc = "Show components for today only" in
   Arg.(value & flag & info [ "today"; "d" ] ~doc)
 
 let tomorrow_arg =
-  let doc = "Show events for tomorrow only" in
+  let doc = "Show components for tomorrow only" in
   Arg.(value & flag & info [ "tomorrow" ] ~doc)
 
 let week_arg =
-  let doc = "Show events for the current week" in
+  let doc = "Show components for the current week" in
   Arg.(value & flag & info [ "week"; "w" ] ~doc)
 
 let month_arg =
-  let doc = "Show events for the current month" in
+  let doc = "Show components for the current month" in
   Arg.(value & flag & info [ "month"; "m" ] ~doc)
 
 let timezone_arg =
@@ -76,22 +76,29 @@ let timezone_arg =
     & info [ "timezone"; "z" ] ~docv:"TIMEZONE" ~doc)
 
 let color_arg =
-  let doc = "Enable colorized output using calendar colors (default: true)" in
-  Arg.(value & vflag `Auto [ (`Always, info [ "color" ] ~doc); (`Never, info [ "no-color" ] ~doc:"Disable colorized output") ])
+  let doc = "Enable colorized output even when stdout is not a terminal" in
+  Arg.(
+    value
+    & vflag `Auto
+        [
+          (`Always, info [ "color" ] ~doc);
+          (`Never, info [ "no-color" ] ~doc:"Disable colorized output");
+        ])
+
+let exclusive_upper ~tz timestamp =
+  Date.next_midnight_result ~tz timestamp
+  |> Result.map_error (fun error ->
+      `Msg (Date.string_of_conversion_error error))
 
 let sort_field_enum =
   [
-    ("start", `Start);
-    ("end", `End);
-    ("summary", `Summary);
-    ("location", `Location);
-    ("calendar", `Calendar);
+    ("start", Component_query.Start);
+    ("end", Component_query.End);
+    ("summary", Component_query.Summary_sort);
+    ("location", Component_query.Location_sort);
+    ("calendar", Component_query.Calendar);
+    ("type", Component_query.Type);
   ]
-
-type sort_spec = {
-  field : [ `Start | `End | `Summary | `Location | `Calendar ];
-  descending : bool;
-}
 
 let parse_sort_spec str =
   let ( let* ) = Result.bind in
@@ -107,7 +114,7 @@ let parse_sort_spec str =
         | _ -> Error (`Msg ("Invalid sort order in: " ^ str))
       in
       match List.assoc_opt field_str sort_field_enum with
-      | Some field -> Ok { field; descending }
+      | Some field -> Ok Component_query.{ field; descending }
       | None ->
           Error
             (`Msg
@@ -117,7 +124,7 @@ let parse_sort_spec str =
 
 let sort_converter =
   let parse s = parse_sort_spec s in
-  let print ppf spec =
+  let print ppf (spec : Component_query.sort_spec) =
     let field_str =
       List.find_map
         (fun (name, field) -> if field = spec.field then Some name else None)
@@ -128,106 +135,116 @@ let sort_converter =
   in
   Arg.conv (parse, print)
 
-let default_sort = { field = `Start; descending = false }
+let default_sort = Component_query.{ field = Start; descending = false }
 
 let sort_arg =
   let doc =
     "Sorting specifications in the format 'field[:order]' where field is one \
-     of 'start', 'end', 'summary', 'location', 'calendar' and order is one of \
-     'asc'/'ascending' or 'desc'/'descending' (default: asc). Multiple sort \
-     specs can be provided for multi-level sorting. When no sort is specified, \
-     defaults to sorting by start time ascending."
+     of 'start', 'end', 'summary', 'location', 'calendar', 'type' and order is \
+     one of 'asc'/'ascending' or 'desc'/'descending' (default: asc). Multiple \
+     sort specs can be provided for multi-level sorting. When no sort is \
+     specified, defaults to sorting by start time ascending."
   in
   Arg.(
     value
     & opt_all sort_converter [ default_sort ]
     & info [ "sort"; "S" ] ~docv:"SORT" ~doc)
 
-(* Convert sort specs to an event comparator *)
-let create_event_comparator sort_specs =
-  match sort_specs with
-  | [] -> Event.by_start
-  | [ spec ] ->
-      let comp =
-        match spec.field with
-        | `Start -> Event.by_start
-        | `End -> Event.by_end
-        | `Summary -> Event.by_summary
-        | `Location -> Event.by_location
-        | `Calendar -> Event.by_calendar_name
-      in
-      if spec.descending then Event.descending comp else comp
-  | specs ->
-      (* Chain multiple sort specs together *)
-      List.fold_right
-        (fun spec acc ->
-          let comp =
-            match spec.field with
-            | `Start -> Event.by_start
-            | `End -> Event.by_end
-            | `Summary -> Event.by_summary
-            | `Location -> Event.by_location
-            | `Calendar -> Event.by_calendar_name
-          in
-          let comp = if spec.descending then Event.descending comp else comp in
-          Event.chain comp acc)
-        (List.tl specs)
-        (let spec = List.hd specs in
-         let comp =
-           match spec.field with
-           | `Start -> Event.by_start
-           | `End -> Event.by_end
-           | `Summary -> Event.by_summary
-           | `Location -> Event.by_location
-           | `Calendar -> Event.by_calendar_name
-         in
-         if spec.descending then Event.descending comp else comp)
+let create_component_query_sort sort_specs =
+  let specs = if sort_specs = [] then [ default_sort ] else sort_specs in
+  specs
 
-let create_component_comparator sort_specs =
-  match sort_specs with
-  | [] -> Component.by_start
-  | [ spec ] ->
-      let comp =
-        match spec.field with
-        | `Start -> Component.by_start
-        | `End -> Component.by_start
-        | `Summary -> Component.by_summary
-        | `Location -> Component.by_start
-        | `Calendar -> Component.by_calendar_name
-      in
-      if spec.descending then Component.descending comp else comp
-  | specs ->
-      List.fold_right
-        (fun spec acc ->
-          let comp =
-            match spec.field with
-            | `Start -> Component.by_start
-            | `End -> Component.by_start
-            | `Summary -> Component.by_summary
-            | `Location -> Component.by_start
-            | `Calendar -> Component.by_calendar_name
-          in
-          let comp = if spec.descending then Component.descending comp else comp in
-          Component.chain comp acc)
-        (List.tl specs)
-        (let spec = List.hd specs in
-         let comp =
-           match spec.field with
-           | `Start -> Component.by_start
-           | `End -> Component.by_start
-           | `Summary -> Component.by_summary
-           | `Location -> Component.by_start
-           | `Calendar -> Component.by_calendar_name
-         in
-         if spec.descending then Component.descending comp else comp)
-
-let parse_timezone ~timezone =
+let parse_timezone_result ~timezone =
   match timezone with
-  | Some tzid -> (
-      match Timedesc.Time_zone.make tzid with
-      | Some tz -> tz
-      | None -> failwith ("Invalid timezone: " ^ tzid))
-  | None -> !Date.default_timezone ()
+  | Some tzid -> Component_query.timezone_of_name tzid
+  | None -> Ok (Date.local_timezone ())
+
+let validate_date_shortcuts ~today ~tomorrow ~week ~month =
+  let selected =
+    [
+      (today, "--today");
+      (tomorrow, "--tomorrow");
+      (week, "--week");
+      (month, "--month");
+    ]
+    |> List.filter_map (fun (enabled, name) ->
+        if enabled then Some name else None)
+  in
+  match selected with
+  | [] | [ _ ] -> Ok ()
+  | _ ->
+      Error
+        (`Msg
+           ("Date shortcuts are mutually exclusive; choose one of --today, \
+             --tomorrow, --week, or --month (received "
+           ^ String.concat ", " selected
+           ^ ")"))
+
+type temporal_scope =
+  | Unbounded
+  | Bounded of { from : Ptime.t option; to_ : Ptime.t }
+
+let conversion_error error = `Msg (Date.string_of_conversion_error error)
+
+let resolve_temporal_scope ~tz ~now ~from_str ~to_str ~today ~tomorrow ~week
+    ~month ~default =
+  let ( let* ) = Result.bind in
+  let* () = validate_date_shortcuts ~today ~tomorrow ~week ~month in
+  let* shortcut =
+    Date.convert_relative_date_formats ~tz ~now ~today ~tomorrow ~week ~month ()
+    |> Result.map_error conversion_error
+  in
+  match shortcut with
+  | Some (from, to_) ->
+      let* () =
+        match (from_str, to_str) with
+        | None, None -> Ok ()
+        | _ ->
+            Error
+              (`Msg
+                 "Can't specify --from / --to with --today, --tomorrow, \
+                  --week, or --month")
+      in
+      let* to_ = exclusive_upper ~tz to_ in
+      Ok (Bounded { from = Some from; to_ })
+  | None -> (
+      let* from =
+        match from_str with
+        | None -> Ok None
+        | Some value ->
+            Date.parse_date ~tz ~now value `From |> Result.map Option.some
+      in
+      let* to_ =
+        match to_str with
+        | None -> Ok None
+        | Some value ->
+            Date.parse_date ~tz ~now value `To |> Result.map Option.some
+      in
+      match (from, to_) with
+      | Some from, Some to_ ->
+          let* to_ = exclusive_upper ~tz to_ in
+          Ok (Bounded { from = Some from; to_ })
+      | Some from, None ->
+          let* to_ =
+            Date.add_months_result ~tz from 1
+            |> Result.map_error conversion_error
+          in
+          Ok (Bounded { from = Some from; to_ })
+      | None, Some to_ ->
+          let* to_ = exclusive_upper ~tz to_ in
+          Ok (Bounded { from = None; to_ })
+      | None, None -> (
+          match default with
+          | `Unbounded -> Ok Unbounded
+          | `One_month ->
+              let* from =
+                Date.today_result ~tz ~now |> Result.map_error conversion_error
+              in
+              let* to_ =
+                Date.add_months_result ~tz from 1
+                |> Result.map_error conversion_error
+              in
+              Ok (Bounded { from = Some from; to_ })))
 
 let date_format_manpage_entries =
   [
@@ -235,7 +252,7 @@ let date_format_manpage_entries =
     `P
       "The following are the possible date formats for the --from and --to \
        command line parameters. Note the value is dependent on --from / --to, \
-       so --from 2025 --to 2025 will include all the events in the year 2025";
+       so --from 2025 --to 2025 includes all matching components in 2025";
     `I ("YYYY-MM-DD", "Specific date (e.g., 2025-3-27, zero-padding optional)");
     `I ("YYYY-MM", "Start/end of specific month (e.g., 2025-3 for March 2025)");
     `I ("YYYY", "Start/end of specific year (e.g., 2025)");

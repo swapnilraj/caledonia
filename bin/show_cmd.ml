@@ -1,45 +1,55 @@
 open Cmdliner
 open Caledonia_lib
 
-let run ~component_id ~format ~fs calendar_dir =
+let run ~component_id ~format ~color ~fs calendar_dir =
   let ( let* ) = Result.bind in
-  let* components = Calendar_dir.get_components ~fs calendar_dir in
-  let results = List.filter (fun c -> Component.get_id c = component_id) components in
-  (if results = [] then print_endline "No component found."
-  else
-    let get_color cal_display_name =
-      match Calendar_dir.find_calendar_by_display_name ~fs calendar_dir cal_display_name with
-      | Some cal_dir_name -> Calendar_dir.get_color ~fs calendar_dir cal_dir_name
-      | None -> None
-    in
-    print_endline (Component.format_components ~format ~get_color results));
-  Ok ()
+  let now = Ptime_clock.now () in
+  let* documents = Calendar_dir.get_documents ~fs calendar_dir in
+  let components = List.concat_map Calendar_document.components documents in
+  let* component =
+    Command_common.find_unique_component ~id:component_id components
+  in
+  let get_color calendar_key =
+    Calendar_dir.get_color ~fs calendar_dir calendar_key
+  in
+  let tz = Date.local_timezone () in
+  let items = [ Component_query.Stored component ] in
+  let* () =
+    match format with
+    | `Text | `Entries -> Output.validate_human_items ~tz items
+    | `Json | `Csv | `Ics | `Sexp -> Ok ()
+  in
+  Output.print_items ~documents ~format ~tz ~now ~get_color ~color items
 
 let component_id_arg =
   let doc = "ID of the component to show" in
   Arg.(required & pos 0 (some string) None & info [] ~docv:"ID" ~doc)
 
 let format_arg =
-  let doc = "Output format (text, id, json, csv, ics, table, sexp)" in
+  let doc = "Output format (text, entries, json, csv, ics, sexp)" in
   Arg.(
     value
     & opt (enum Query_args.format_enum) `Entries
     & info [ "format"; "o" ] ~docv:"FORMAT" ~doc)
 
 let cmd ~fs calendar_dir =
-  let run component_id format () =
-    match run ~component_id ~format ~fs calendar_dir with
+  let run component_id format color () =
+    match run ~component_id ~format ~color ~fs calendar_dir with
     | Error (`Msg msg) ->
-        Printf.eprintf "Error: %s\n%!" msg;
+        Output.print_error "Error" msg;
         1
     | Ok () -> 0
   in
-  let term = Term.(const run $ component_id_arg $ format_arg) in
+  let term =
+    Term.(const run $ component_id_arg $ format_arg $ Query_args.color_arg)
+  in
   let doc = "Show details of a specific component" in
   let man =
     [
       `S Manpage.s_description;
-      `P "Show detailed information about a specific component (event, todo, or journal) by its ID.";
+      `P
+        "Show detailed information about a specific component (event, todo, or \
+         journal) by its ID.";
       `P "You can find component IDs by using the `list` or `search` commands.";
       `S Manpage.s_examples;
       `P "Show component details:";
