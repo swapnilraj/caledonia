@@ -1,0 +1,1096 @@
+{
+  "schema_version": 1,
+  "source": "docs/data-model-simplification-prd.md",
+  "architecture": "docs/data-model-architecture.md",
+  "updated": "2026-07-16",
+  "status_definitions": {
+    "not_started": "The required target boundary has not been implemented.",
+    "in_progress": "Some implementation or characterization exists, but the complete requirement and its acceptance evidence are not yet satisfied.",
+    "blocked": "Work cannot proceed without an explicit external decision; the blocker must be listed.",
+    "complete": "Implementation, compatibility, tests, interfaces, and cleanup are all evidenced."
+  },
+  "summary": {
+    "total": 77,
+    "not_started": 0,
+    "in_progress": 0,
+    "blocked": 0,
+    "complete": 77
+  },
+  "requirements": [
+    {
+      "id": "DMO-1",
+      "title": "Single document abstraction",
+      "priority": "P0",
+      "phase": "C",
+      "status": "complete",
+      "evidence": [
+        "lib/calendar_document.ml",
+        "lib/calendar_document.mli",
+        "lib/calendar_codec.mli",
+        "test/architecture/check_architecture.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMO-2",
+      "title": "Remove component-local calendars",
+      "priority": "P0",
+      "phase": "E",
+      "status": "complete",
+      "evidence": [
+        "lib/event.ml",
+        "lib/todo.ml",
+        "lib/journal.ml",
+        "test/architecture/check_architecture.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMO-3",
+      "title": "Shared source metadata",
+      "priority": "P0",
+      "phase": "B/E",
+      "status": "complete",
+      "evidence": [
+        "lib/component_source.ml",
+        "lib/component_source.mli",
+        "lib/component.ml",
+        "lib/calendar_document.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMO-4",
+      "title": "Non-optional persisted fingerprint",
+      "priority": "P0",
+      "phase": "E",
+      "status": "complete",
+      "evidence": [
+        "lib/component_source.mli",
+        "lib/component.mli",
+        "test/architecture/check_negative_interfaces.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMO-5",
+      "title": "Document grouping",
+      "priority": "P0",
+      "phase": "C/E",
+      "status": "complete",
+      "evidence": [
+        "lib/calendar_dir.mli",
+        "lib/calendar_document.mli",
+        "test/test_repository_ownership.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMO-6",
+      "title": "Immutable snapshots",
+      "priority": "P0",
+      "phase": "D/E",
+      "status": "complete",
+      "evidence": [
+        "lib/component.mli",
+        "lib/event.mli",
+        "lib/todo.mli",
+        "lib/journal.mli",
+        "test/test_repository_ownership.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMO-7",
+      "title": "VTIMEZONE context",
+      "priority": "P1",
+      "phase": "E",
+      "status": "complete",
+      "evidence": [
+        "lib/calendar_export.ml",
+        "lib/calendar_document.mli",
+        "test/test_calendar_export.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMI-1",
+      "title": "One component kind",
+      "priority": "P0",
+      "phase": "B",
+      "status": "complete",
+      "evidence": [
+        "lib/component_kind.ml",
+        "lib/component_kind.mli",
+        "test/architecture/check_architecture.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMI-2",
+      "title": "One local identity",
+      "priority": "P0",
+      "phase": "B/C/E",
+      "status": "complete",
+      "evidence": [
+        "lib/component_identity.ml",
+        "lib/component.ml",
+        "lib/calendar_document.ml",
+        "test/test_repository_ownership.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMI-3",
+      "title": "Complete write target",
+      "priority": "P0",
+      "phase": "E/F",
+      "status": "complete",
+      "evidence": [
+        "lib/component_target.ml",
+        "lib/component_target.mli",
+        "lib/component_source.mli",
+        "lib/calendar_dir.mli"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMI-4",
+      "title": "Named alarm fire identity",
+      "priority": "P0",
+      "phase": "B/G",
+      "status": "complete",
+      "evidence": [
+        "lib/alarm_fire_id.ml",
+        "lib/alarm_fire_id.mli",
+        "lib/alarm_daemon_core.ml",
+        "test/test_daemon.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMI-5",
+      "title": "Draft separation",
+      "priority": "P0",
+      "phase": "D",
+      "status": "complete",
+      "evidence": [
+        "lib/event.mli",
+        "lib/todo.mli",
+        "lib/journal.mli",
+        "test/architecture/check_architecture.ml",
+        "test/architecture/check_negative_interfaces.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMI-6",
+      "title": "Storage-owned creation",
+      "priority": "P0",
+      "phase": "F",
+      "status": "complete",
+      "evidence": [
+        "lib/calendar_dir.ml",
+        "lib/calendar_dir.mli",
+        "test/test_repository_ownership.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMI-7",
+      "title": "Canonical reload result",
+      "priority": "P0",
+      "phase": "F",
+      "status": "complete",
+      "evidence": [
+        "lib/calendar_dir.ml",
+        "test/test_repository_ownership.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMI-8",
+      "title": "Explicit deletion outcome",
+      "priority": "P1",
+      "phase": "F",
+      "status": "complete",
+      "evidence": [
+        "lib/calendar_dir.mli",
+        "lib/calendar_dir.ml",
+        "test/test_storage.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMR-1",
+      "title": "Explicit event series",
+      "priority": "P0",
+      "phase": "D",
+      "status": "complete",
+      "evidence": [
+        "lib/event.ml",
+        "lib/event.mli",
+        "test/test_occurrence.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMR-2",
+      "title": "Explicit occurrence type",
+      "priority": "P0",
+      "phase": "G",
+      "status": "complete",
+      "evidence": [
+        "lib/event.mli",
+        "lib/component_query.ml",
+        "test/test_query.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMR-3",
+      "title": "Non-writable derived values",
+      "priority": "P0",
+      "phase": "G",
+      "status": "complete",
+      "evidence": [
+        "lib/event.mli",
+        "lib/calendar_dir.mli",
+        "test/architecture/check_negative_interfaces.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMR-4",
+      "title": "Typed occurrence reference",
+      "priority": "P0",
+      "phase": "G",
+      "status": "complete",
+      "evidence": [
+        "lib/event.mli",
+        "lib/calendar_dir.mli",
+        "bin/server_cmd.ml",
+        "test/test_occurrence.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMR-5",
+      "title": "Series-local validation",
+      "priority": "P0",
+      "phase": "D",
+      "status": "complete",
+      "evidence": [
+        "lib/event.ml",
+        "test/test_occurrence.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMR-6",
+      "title": "Series replacement semantics",
+      "priority": "P1",
+      "phase": "D/F",
+      "status": "complete",
+      "evidence": [
+        "lib/event.ml",
+        "lib/calendar_document.ml",
+        "test/test_occurrence.ml",
+        "test/test_storage.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMR-7",
+      "title": "Occurrence export semantics",
+      "priority": "P1",
+      "phase": "E/G",
+      "status": "complete",
+      "evidence": [
+        "lib/calendar_export.ml",
+        "bin/output.ml",
+        "test/test_calendar_export.ml",
+        "test/cli/cli_integration.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMR-8",
+      "title": "Alarm identity",
+      "priority": "P0",
+      "phase": "G",
+      "status": "complete",
+      "evidence": [
+        "lib/event.ml",
+        "lib/alarm_query.ml",
+        "lib/alarm_daemon_core.ml",
+        "test/test_alarms.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMC-1",
+      "title": "Abstract codec document",
+      "priority": "P0",
+      "phase": "C",
+      "status": "complete",
+      "evidence": [
+        "lib/calendar_codec.mli",
+        "lib/calendar_document.mli",
+        "test/architecture/check_architecture.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMC-2",
+      "title": "Explicit opaque entries",
+      "priority": "P0",
+      "phase": "C",
+      "status": "complete",
+      "evidence": [
+        "lib/calendar_codec.ml",
+        "lib/calendar_codec.mli",
+        "test/test_storage.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMC-3",
+      "title": "Explicit compatibility metadata",
+      "priority": "P0",
+      "phase": "C",
+      "status": "complete",
+      "evidence": [
+        "lib/calendar_codec.ml",
+        "lib/calendar_document.ml",
+        "test/test_storage.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMC-4",
+      "title": "One production serialization path",
+      "priority": "P0",
+      "phase": "C/G",
+      "status": "complete",
+      "evidence": [
+        "lib/calendar_codec.ml",
+        "lib/calendar_export.ml",
+        "test/architecture/check_architecture.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMC-5",
+      "title": "Marker non-observability",
+      "priority": "P0",
+      "phase": "C",
+      "status": "complete",
+      "evidence": [
+        "lib/calendar_codec.ml",
+        "test/test_storage.ml",
+        "test/test_server_e2e.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMC-6",
+      "title": "Semantic round trip",
+      "priority": "P0",
+      "phase": "C",
+      "status": "complete",
+      "evidence": [
+        "test/test_storage.ml",
+        "test/test_occurrence.ml",
+        "test/test_calendar_export.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMC-7",
+      "title": "Mutation preservation",
+      "priority": "P0",
+      "phase": "C/F",
+      "status": "complete",
+      "evidence": [
+        "lib/calendar_document.ml",
+        "test/test_storage.ml",
+        "test/test_calendar_export.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMC-8",
+      "title": "Validation ownership",
+      "priority": "P1",
+      "phase": "C/D/F",
+      "status": "complete",
+      "evidence": [
+        "lib/calendar_codec.ml",
+        "lib/property_validation.ml",
+        "lib/event.ml",
+        "lib/todo.ml",
+        "lib/journal.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMS-1",
+      "title": "Repository-owned current state",
+      "priority": "P0",
+      "phase": "F",
+      "status": "complete",
+      "evidence": [
+        "lib/calendar_dir.ml",
+        "lib/calendar_dir.mli",
+        "test/architecture/check_architecture.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMS-2",
+      "title": "Original target plus replacement",
+      "priority": "P0",
+      "phase": "F",
+      "status": "complete",
+      "evidence": [
+        "lib/calendar_dir.mli",
+        "lib/calendar_document.ml",
+        "test/architecture/check_negative_interfaces.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMS-3",
+      "title": "Existing transaction guarantees",
+      "priority": "P0",
+      "phase": "F/H",
+      "status": "complete",
+      "evidence": [
+        "lib/calendar_dir.ml",
+        "test/test_storage.ml",
+        "docs/data-recovery.md"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMS-4",
+      "title": "Fresh global invariants",
+      "priority": "P0",
+      "phase": "F",
+      "status": "complete",
+      "evidence": [
+        "lib/calendar_dir.ml",
+        "lib/calendar_dir.mli",
+        "test/test_repository_ownership.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMS-5",
+      "title": "No cache-update return convention",
+      "priority": "P0",
+      "phase": "F",
+      "status": "complete",
+      "evidence": [
+        "lib/calendar_dir.mli",
+        "bin/server_cmd.ml",
+        "test/test_repository_ownership.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMS-6",
+      "title": "One component mutation engine",
+      "priority": "P0",
+      "phase": "F/G",
+      "status": "complete",
+      "evidence": [
+        "lib/calendar_dir.ml",
+        "lib/calendar_document.ml",
+        "bin/server_cmd.ml",
+        "test/test_storage.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMS-7",
+      "title": "Typed mutation errors",
+      "priority": "P1",
+      "phase": "B/F",
+      "status": "complete",
+      "evidence": [
+        "lib/storage_error.ml",
+        "lib/storage_error.mli",
+        "bin/server_cmd.ml",
+        "test/test_storage.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMS-8",
+      "title": "No behavior regression",
+      "priority": "P0",
+      "phase": "F/H",
+      "status": "complete",
+      "evidence": [
+        "lib/calendar_document.ml",
+        "test/test_storage.ml",
+        "test/test_calendar_export.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMA-1",
+      "title": "One patch algebra",
+      "priority": "P1",
+      "phase": "B/H",
+      "status": "complete",
+      "evidence": [
+        "lib/patch.ml",
+        "lib/patch.mli",
+        "lib/sexp.ml",
+        "test/architecture/check_architecture.ml",
+        "test/test_server_e2e.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMA-2",
+      "title": "Typed query statuses",
+      "priority": "P1",
+      "phase": "B",
+      "status": "complete",
+      "evidence": [
+        "lib/component_query.mli",
+        "bin/query_args.ml",
+        "bin/server_cmd.ml",
+        "test/test_query.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMA-3",
+      "title": "Presentation separation",
+      "priority": "P1",
+      "phase": "G/H",
+      "status": "complete",
+      "evidence": [
+        "bin/output.ml",
+        "lib/sexp.ml",
+        "lib/calendar_export.ml",
+        "test/architecture/check_architecture.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMA-4",
+      "title": "Query separation",
+      "priority": "P1",
+      "phase": "G/H",
+      "status": "complete",
+      "evidence": [
+        "lib/component_query.ml",
+        "lib/component_query.mli",
+        "bin/list_cmd.ml",
+        "bin/search_cmd.ml",
+        "test/test_query.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMA-5",
+      "title": "Recurrence separation",
+      "priority": "P1",
+      "phase": "D/G",
+      "status": "complete",
+      "evidence": [
+        "lib/event.ml",
+        "lib/event.mli",
+        "bin/server_cmd.ml",
+        "test/test_occurrence.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMA-6",
+      "title": "Alarm calculation separation",
+      "priority": "P1",
+      "phase": "G",
+      "status": "complete",
+      "evidence": [
+        "lib/alarm.ml",
+        "lib/alarm.mli",
+        "lib/alarm_query.ml",
+        "lib/event.ml",
+        "lib/todo.ml",
+        "test/test_alarms.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMA-7",
+      "title": "Restricted raw escape hatches",
+      "priority": "P1",
+      "phase": "E/H",
+      "status": "complete",
+      "evidence": [
+        "lib/component.mli",
+        "lib/event.mli",
+        "lib/calendar_document.mli",
+        "test/architecture/check_architecture.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMA-8",
+      "title": "Explicit public interfaces",
+      "priority": "P1",
+      "phase": "H",
+      "status": "complete",
+      "evidence": [
+        "bin/output.mli",
+        "lib/sexp.mli",
+        "lib/calendar_export.mli",
+        "lib/alarm_query.mli",
+        "test/architecture/check_architecture.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMA-9",
+      "title": "Compatibility quarantine",
+      "priority": "P2",
+      "phase": "H",
+      "status": "complete",
+      "evidence": [
+        "lib/calendar_codec.mli",
+        "test/architecture/check_architecture.ml",
+        "docs/data-model-architecture.md",
+        "CHANGELOG.md"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMT-1",
+      "title": "Model documentation",
+      "priority": "P1",
+      "phase": "A/H",
+      "status": "complete",
+      "evidence": [
+        "docs/data-model-architecture.md",
+        "docs/data-model-simplification-prd.md",
+        "docs/data-model-requirements.json"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMT-2",
+      "title": "Interface tests",
+      "priority": "P1",
+      "phase": "E/G",
+      "status": "complete",
+      "evidence": [
+        "test/architecture/check_negative_interfaces.ml",
+        "test/architecture/negative/occurrence_replace.ml",
+        "test/architecture/negative/event_source.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMT-3",
+      "title": "Ownership tests",
+      "priority": "P1",
+      "phase": "E/F",
+      "status": "complete",
+      "evidence": [
+        "test/test_repository_ownership.ml",
+        "test/test_storage.ml",
+        "lib/calendar_document.mli"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMT-4",
+      "title": "Boundary tests",
+      "priority": "P1",
+      "phase": "A-H",
+      "status": "complete",
+      "evidence": [
+        "test/cli/cli_integration.ml",
+        "test/test_server_e2e.ml",
+        "emacs/test-caledonia.el",
+        "docs/machine-output-v1.md",
+        "docs/protocol-v1.md"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMT-5",
+      "title": "Compatibility tests",
+      "priority": "P1",
+      "phase": "A-H",
+      "status": "complete",
+      "evidence": [
+        "test/test_daemon.ml",
+        "test/test_storage.ml",
+        "test/test_server_e2e.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMT-6",
+      "title": "Dependency gates",
+      "priority": "P1",
+      "phase": "A/H",
+      "status": "complete",
+      "evidence": [
+        "test/architecture/check_architecture.ml",
+        "test/architecture/dune",
+        "test/architecture/check_negative_interfaces.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMT-7",
+      "title": "No hidden incompleteness",
+      "priority": "P1",
+      "phase": "A-H",
+      "status": "complete",
+      "evidence": [
+        "docs/data-model-requirements.json",
+        "docs/data-model-simplification-prd.md",
+        "test/architecture/check_architecture.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMT-8",
+      "title": "Clean-environment proof",
+      "priority": "P1",
+      "phase": "H",
+      "status": "complete",
+      "evidence": [
+        "caledonia.opam",
+        "emacs/dune",
+        "test/test_watcher.ml",
+        "docs/data-model-simplification-prd.md"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMO-8",
+      "title": "Derivable document indexes",
+      "priority": "P1",
+      "phase": "I",
+      "status": "complete",
+      "evidence": [
+        "docs/data-model-simplification-prd.md",
+        "lib/calendar_document.ml",
+        "test/architecture/check_architecture.ml",
+        "test/test_calendar_export.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMI-9",
+      "title": "Total source display name",
+      "priority": "P1",
+      "phase": "I",
+      "status": "complete",
+      "evidence": [
+        "docs/data-model-simplification-prd.md",
+        "lib/component_source.ml",
+        "lib/component_source.mli",
+        "test/architecture/check_architecture.ml",
+        "test/test_query.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMI-10",
+      "title": "One component-kind algebra everywhere",
+      "priority": "P1",
+      "phase": "I",
+      "status": "complete",
+      "evidence": [
+        "docs/data-model-simplification-prd.md",
+        "lib/property_validation.ml",
+        "test/architecture/check_architecture.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMR-9",
+      "title": "One public event-series type name",
+      "priority": "P1",
+      "phase": "I",
+      "status": "complete",
+      "evidence": [
+        "docs/data-model-simplification-prd.md",
+        "lib/event.ml",
+        "lib/event.mli",
+        "test/architecture/check_architecture.ml",
+        "test/architecture/check_negative_interfaces.ml",
+        "test/test_event.ml",
+        "test/test_occurrence.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMA-10",
+      "title": "One temporal-value algebra",
+      "priority": "P1",
+      "phase": "I",
+      "status": "complete",
+      "evidence": [
+        "docs/data-model-simplification-prd.md",
+        "lib/date.ml",
+        "lib/date.mli",
+        "test/architecture/check_architecture.ml",
+        "test/test_date.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMA-11",
+      "title": "One query-sort algebra",
+      "priority": "P1",
+      "phase": "I",
+      "status": "complete",
+      "evidence": [
+        "docs/data-model-simplification-prd.md",
+        "bin/query_args.ml",
+        "lib/component_query.mli",
+        "test/architecture/check_architecture.ml",
+        "test/test_query.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMA-12",
+      "title": "Minimal truthful public surface",
+      "priority": "P1",
+      "phase": "I",
+      "status": "complete",
+      "evidence": [
+        "docs/data-model-simplification-prd.md",
+        "lib/event.mli",
+        "lib/todo.mli",
+        "lib/component_query.mli",
+        "test/architecture/check_architecture.ml",
+        "test/architecture/check_negative_interfaces.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMW-1",
+      "title": "Whole-diff call graph",
+      "priority": "P0",
+      "phase": "J",
+      "status": "complete",
+      "evidence": [
+        "docs/whole-diff-simplicity-prd.md",
+        "docs/whole-diff-data-flow-audit.md"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMW-2",
+      "title": "Derived stored identity",
+      "priority": "P1",
+      "phase": "J",
+      "status": "complete",
+      "evidence": [
+        "lib/component.ml",
+        "lib/component.mli",
+        "test/architecture/check_architecture.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMW-3",
+      "title": "Derived deterministic snapshots",
+      "priority": "P1",
+      "phase": "J",
+      "status": "complete",
+      "evidence": [
+        "lib/calendar_dir.ml",
+        "test/test_repository_ownership.ml",
+        "test/architecture/check_architecture.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMW-4",
+      "title": "Explicit clocks and shared identifiers",
+      "priority": "P0",
+      "phase": "J",
+      "status": "complete",
+      "evidence": [
+        "lib/fresh_id.ml",
+        "lib/event.mli",
+        "lib/todo.mli",
+        "lib/journal.mli",
+        "test/architecture/check_architecture.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMW-5",
+      "title": "One alarm and query owner model",
+      "priority": "P1",
+      "phase": "J",
+      "status": "complete",
+      "evidence": [
+        "lib/alarm_query.mli",
+        "lib/component_query.mli",
+        "lib/alarm_daemon_core.ml",
+        "test/architecture/check_architecture.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMW-6",
+      "title": "Presentation-free daemon core",
+      "priority": "P1",
+      "phase": "J",
+      "status": "complete",
+      "evidence": [
+        "lib/alarm_daemon_core.mli",
+        "bin/alarm_daemon_cmd.ml",
+        "test/test_daemon.ml",
+        "test/architecture/check_architecture.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMW-7",
+      "title": "One event response model",
+      "priority": "P0",
+      "phase": "J",
+      "status": "complete",
+      "evidence": [
+        "lib/sexp.ml",
+        "lib/sexp.mli",
+        "bin/server_cmd.ml",
+        "test/test_occurrence.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMW-8",
+      "title": "Total alarms and typed temporal failure",
+      "priority": "P0",
+      "phase": "J",
+      "status": "complete",
+      "evidence": [
+        "lib/format_utils.mli",
+        "lib/todo.ml",
+        "test/test_alarms.ml",
+        "test/test_storage.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMW-9",
+      "title": "Shared temporal scope",
+      "priority": "P1",
+      "phase": "J",
+      "status": "complete",
+      "evidence": [
+        "bin/query_args.ml",
+        "bin/list_cmd.ml",
+        "bin/search_cmd.ml",
+        "bin/alarms_cmd.ml",
+        "test/cli/cli_integration.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMW-10",
+      "title": "Shared boundary text codecs",
+      "priority": "P2",
+      "phase": "J",
+      "status": "complete",
+      "evidence": [
+        "lib/component_kind.ml",
+        "lib/component_status.ml",
+        "bin/component_args.ml",
+        "bin/output.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMW-11",
+      "title": "Shared patch and property utilities",
+      "priority": "P2",
+      "phase": "J",
+      "status": "complete",
+      "evidence": [
+        "lib/patch.ml",
+        "lib/property_validation.ml",
+        "lib/event.ml",
+        "lib/todo.ml",
+        "lib/journal.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMW-12",
+      "title": "Shared command result and lock utilities",
+      "priority": "P2",
+      "phase": "J",
+      "status": "complete",
+      "evidence": [
+        "bin/command_common.ml",
+        "lib/calendar_dir.ml",
+        "test/architecture/check_architecture.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMW-13",
+      "title": "Truthful lifecycle and concurrency contract",
+      "priority": "P1",
+      "phase": "J",
+      "status": "complete",
+      "evidence": [
+        "docs/whole-diff-simplicity-prd.md",
+        "docs/whole-diff-data-flow-audit.md",
+        "docs/data-model-architecture.md",
+        "test/test_repository_ownership.ml"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "DMW-14",
+      "title": "Upstream commit adjudication",
+      "priority": "P1",
+      "phase": "J",
+      "status": "complete",
+      "evidence": [
+        "docs/whole-diff-simplicity-prd.md",
+        "docs/whole-diff-data-flow-audit.md",
+        "test/cli/cli_integration.ml",
+        "test/test_storage.ml"
+      ],
+      "remaining": []
+    }
+  ],
+  "verification": {
+    "date": "2026-07-16",
+    "result": "complete",
+    "gates": [
+      "ocamlformat and dune @fmt",
+      "clean dune @all build and forced full suite",
+      "architecture ledger and eight negative interfaces",
+      "direct CLI integration, version, and help",
+      "Emacs warning-as-error byte compilation and 25 ERT tests",
+      "opam lint, tested reinstall, and installed-artifact smoke",
+      "GitHub Actions YAML syntax and structure",
+      "parallel Linux full suite and real inotify watcher lifecycle",
+      "UTC and Asia/Tokyo recurrence, storage, export, and server matrices"
+    ]
+  }
+}
